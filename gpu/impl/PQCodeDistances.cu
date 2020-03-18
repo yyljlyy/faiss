@@ -1,26 +1,24 @@
-
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the CC-by-NC license found in the
+ * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 
-#include "PQCodeDistances.cuh"
+#include <faiss/gpu/impl/PQCodeDistances.cuh>
 
-#include "BroadcastSum.cuh"
-#include "Distance.cuh"
-#include "L2Norm.cuh"
-#include "../utils/DeviceDefs.cuh"
-#include "../utils/DeviceUtils.h"
-#include "../utils/Float16.cuh"
-#include "../utils/MatrixMult.cuh"
-#include "../utils/PtxUtils.cuh"
-#include "../utils/StaticUtils.h"
-#include "../utils/Transpose.cuh"
+#include <faiss/gpu/impl/BroadcastSum.cuh>
+#include <faiss/gpu/impl/Distance.cuh>
+#include <faiss/gpu/impl/L2Norm.cuh>
+#include <faiss/gpu/utils/ConversionOperators.cuh>
+#include <faiss/gpu/utils/DeviceDefs.cuh>
+#include <faiss/gpu/utils/DeviceUtils.h>
+#include <faiss/gpu/utils/Float16.cuh>
+#include <faiss/gpu/utils/MatrixMult.cuh>
+#include <faiss/gpu/utils/PtxUtils.cuh>
+#include <faiss/gpu/utils/StaticUtils.h>
+#include <faiss/gpu/utils/Transpose.cuh>
 
 namespace faiss { namespace gpu {
 
@@ -28,12 +26,10 @@ template <typename T>
 struct Converter {
 };
 
-#ifdef FAISS_USE_FLOAT16
 template <>
 struct Converter<half> {
   inline static __device__ half to(float v) { return __float2half(v); }
 };
-#endif
 
 template <>
 struct Converter<float> {
@@ -42,7 +38,7 @@ struct Converter<float> {
 
 // Kernel responsible for calculating distance from residual vector to
 // each product quantizer code centroid
-template <typename OutCodeT, int DimsPerSubQuantizer>
+template <typename OutCodeT, int DimsPerSubQuantizer, bool L2Distance>
 __global__ void
 __launch_bounds__(288, 4)
 pqCodeDistances(Tensor<float, 2, true> queries,
@@ -123,10 +119,16 @@ pqCodeDistances(Tensor<float, 2, true> queries,
            i < DimsPerSubQuantizer;
            i += blockDim.x - codesPerSubQuantizer) {
         auto coarseId = coarseIds[0];
+        // In case NaNs were in the original query data
+        coarseId = coarseId == -1 ? 0 : coarseId;
         auto coarseCentroidSubQuantizer =
           coarseCentroids[coarseId][subQuantizer * dimsPerSubQuantizer].data();
 
-        smemResidual1[i] = smemQuery[i] - coarseCentroidSubQuantizer[i];
+        if (L2Distance) {
+          smemResidual1[i] = smemQuery[i] - coarseCentroidSubQuantizer[i];
+        } else {
+          smemResidual1[i] = coarseCentroidSubQuantizer[i];
+        }
       }
     }
 
@@ -144,10 +146,18 @@ pqCodeDistances(Tensor<float, 2, true> queries,
           // terminate
           if (coarse != (topQueryToCentroid.getSize(1) - 1)) {
             auto coarseId = coarseIds[coarse + 1];
-            auto coarseCentroidSubQuantizer =
-              coarseCentroids[coarseId][subQuantizer * dimsPerSubQuantizer].data();
+            // In case NaNs were in the original query data
+            coarseId = coarseId == -1 ? 0 : coarseId;
 
-            smemResidual2[i] = smemQuery[i] - coarseCentroidSubQuantizer[i];
+            auto coarseCentroidSubQuantizer =
+              coarseCentroids[coarseId]
+              [subQuantizer * dimsPerSubQuantizer].data();
+
+            if (L2Distance) {
+              smemResidual2[i] = smemQuery[i] - coarseCentroidSubQuantizer[i];
+            } else {
+              smemResidual2[i] = coarseCentroidSubQuantizer[i];
+            }
           }
         }
       } else {
@@ -163,44 +173,90 @@ pqCodeDistances(Tensor<float, 2, true> queries,
         // processing
 
         // Unrolled loop
+        if (L2Distance) {
 #pragma unroll
-        for (int i = 0; i < DimsPerSubQuantizer / kUnroll; ++i) {
+          for (int i = 0; i < DimsPerSubQuantizer / kUnroll; ++i) {
+#pragma unroll
+            for (int j = 0; j < kUnroll; ++j) {
+              vals[j] = smemResidual1[i * kUnroll + j];
+            }
 
 #pragma unroll
-          for (int j = 0; j < kUnroll; ++j) {
-            vals[j] = smemResidual1[i * kUnroll + j];
+            for (int j = 0; j < kUnroll; ++j) {
+              vals[j] -= subQuantizerData[i * kUnroll + j];
+            }
+
+#pragma unroll
+            for (int j = 0; j < kUnroll; ++j) {
+              vals[j] *= vals[j];
+            }
+
+#pragma unroll
+            for (int j = 0; j < kUnroll; ++j) {
+              dist += vals[j];
+            }
           }
+        } else {
+          // Inner product: query slice against the reconstructed sub-quantizer
+          // for this coarse cell (query o (centroid + subQCentroid))
+#pragma unroll
+          for (int i = 0; i < DimsPerSubQuantizer / kUnroll; ++i) {
+#pragma unroll
+            for (int j = 0; j < kUnroll; ++j) {
+              vals[j] = smemResidual1[i * kUnroll + j];
+            }
 
 #pragma unroll
-          for (int j = 0; j < kUnroll; ++j) {
-            vals[j] -= subQuantizerData[i * kUnroll + j];
-          }
+            for (int j = 0; j < kUnroll; ++j) {
+              vals[j] += subQuantizerData[i * kUnroll + j];
+            }
 
 #pragma unroll
-          for (int j = 0; j < kUnroll; ++j) {
-            vals[j] *= vals[j];
-          }
+            for (int j = 0; j < kUnroll; ++j) {
+              vals[j] *= smemQuery[i * kUnroll + j];
+            }
 
 #pragma unroll
-          for (int j = 0; j < kUnroll; ++j) {
-            dist += vals[j];
+            for (int j = 0; j < kUnroll; ++j) {
+              dist += vals[j];
+            }
           }
         }
 
         // Remainder loop
+        if (L2Distance) {
 #pragma unroll
-        for (int j = 0; j < kRemainder; ++j) {
-          vals[j] = smemResidual1[kRemainderBase + j];
-        }
+          for (int j = 0; j < kRemainder; ++j) {
+            vals[j] = smemResidual1[kRemainderBase + j];
+          }
 
 #pragma unroll
-        for (int j = 0; j < kRemainder; ++j) {
-          vals[j] -= subQuantizerData[kRemainderBase + j];
-        }
+          for (int j = 0; j < kRemainder; ++j) {
+            vals[j] -= subQuantizerData[kRemainderBase + j];
+          }
 
 #pragma unroll
-        for (int j = 0; j < kRemainder; ++j) {
-          vals[j] *= vals[j];
+          for (int j = 0; j < kRemainder; ++j) {
+            vals[j] *= vals[j];
+          }
+        } else {
+          // Inner product
+          // Inner product: query slice against the reconstructed sub-quantizer
+          // for this coarse cell (query o (centroid + subQCentroid))
+#pragma unroll
+          for (int j = 0; j < kRemainder; ++j) {
+            vals[j] = smemResidual1[kRemainderBase + j];
+          }
+
+#pragma unroll
+          for (int j = 0; j < kRemainder; ++j) {
+            vals[j] += subQuantizerData[kRemainderBase + j];
+          }
+
+#pragma unroll
+          for (int j = 0; j < kRemainder; ++j) {
+            vals[j] *= smemQuery[kRemainderBase + j];
+          }
         }
 
 #pragma unroll
@@ -260,7 +316,8 @@ runResidualVector(Tensor<float, 3, true>& pqCentroids,
   residualVector<<<grid, block, 0, stream>>>(
     queries, coarseCentroids, topQueryToCentroid, pqCentroids.getSize(1),
     residual);
-  CUDA_VERIFY(cudaGetLastError());
+
+  CUDA_TEST_ERROR();
 }
 
 void
@@ -301,7 +358,7 @@ runPQCodeDistancesMM(Tensor<float, 3, true>& pqCentroids,
         topQueryToCentroid.getSize(1),
         pqCentroids.getSize(1)});
 
-  runL2Norm(residualView2, residualNorms, true, stream);
+  runL2Norm(residualView2, true, residualNorms, true, stream);
 
   // Perform a batch MM:
   // (sub q) x {(q * c)(sub dim) x (sub dim)(code)} =>
@@ -332,12 +389,11 @@ runPQCodeDistancesMM(Tensor<float, 3, true>& pqCentroids,
         topQueryToCentroid.getSize(1),
         pqCentroids.getSize(2)});
 
-  runSumAlongRows(residualNorms, residualDistanceView2, stream);
+  runSumAlongRows(residualNorms, residualDistanceView2, false, stream);
 
   Tensor<float, 4, true> outCodeDistancesF;
   DeviceTensor<float, 4, true> outCodeDistancesFloatMem;
 
-#ifdef FAISS_USE_FLOAT16
   if (useFloat16Lookup) {
     outCodeDistancesFloatMem = DeviceTensor<float, 4, true>(
       mem, {outCodeDistances.getSize(0),
@@ -347,10 +403,7 @@ runPQCodeDistancesMM(Tensor<float, 3, true>& pqCentroids,
       stream);
 
     outCodeDistancesF = outCodeDistancesFloatMem;
-  }
-#endif
-
-  if (!useFloat16Lookup) {
+  } else {
     outCodeDistancesF = outCodeDistances.toTensor<float>();
   }
 
@@ -382,7 +435,7 @@ runPQCodeDistancesMM(Tensor<float, 3, true>& pqCentroids,
     {pqCentroids.getSize(0) * pqCentroids.getSize(2)},
     stream);
 
-  runL2Norm(pqCentroidsTransposeView, pqCentroidsNorm, true, stream);
+  runL2Norm(pqCentroidsTransposeView, true, pqCentroidsNorm, true, stream);
 
   // View output as (q * c)(sub q * code), and add centroid norm to
   // each row
@@ -392,13 +445,13 @@ runPQCodeDistancesMM(Tensor<float, 3, true>& pqCentroids,
 
   runSumAlongColumns(pqCentroidsNorm, outDistancesCodeViewCols, stream);
 
-#ifdef FAISS_USE_FLOAT16
   if (useFloat16Lookup) {
     // Need to convert back
     auto outCodeDistancesH = outCodeDistances.toTensor<half>();
-    toHalf(stream, outCodeDistancesF, outCodeDistancesH);
+    convertTensor<float, half, 4>(stream,
+                                  outCodeDistancesF,
+                                  outCodeDistancesH);
   }
-#endif
 }
 
 void
@@ -407,6 +460,7 @@ runPQCodeDistances(Tensor<float, 3, true>& pqCentroids,
                    Tensor<float, 2, true>& coarseCentroids,
                    Tensor<int, 2, true>& topQueryToCentroid,
                    NoTypeTensor<4, true>& outCodeDistances,
+                   bool l2Distance,
                    bool useFloat16Lookup,
                    cudaStream_t stream) {
   const auto numSubQuantizers = pqCentroids.getSize(0);
@@ -429,80 +483,85 @@ runPQCodeDistances(Tensor<float, 3, true>& pqCentroids,
   auto smem = (3 * dimsPerSubQuantizer) * sizeof(float)
     + topQueryToCentroid.getSize(1) * sizeof(int);
 
-#ifdef FAISS_USE_FLOAT16
-#define CODE_DISTANCE(DIMS)                                             \
+#define RUN_CODE(DIMS, L2)                                              \
   do {                                                                  \
     if (useFloat16Lookup) {                                             \
       auto outCodeDistancesT = outCodeDistances.toTensor<half>();       \
                                                                         \
-      pqCodeDistances<half, DIMS><<<grid, block, smem, stream>>>(       \
+      pqCodeDistances<half, DIMS, L2><<<grid, block, smem, stream>>>(   \
         queries, kQueriesPerBlock,                                      \
         coarseCentroids, pqCentroids,                                   \
         topQueryToCentroid, outCodeDistancesT);                         \
     } else {                                                            \
       auto outCodeDistancesT = outCodeDistances.toTensor<float>();      \
                                                                         \
-      pqCodeDistances<float, DIMS><<<grid, block, smem, stream>>>(      \
+      pqCodeDistances<float, DIMS, L2><<<grid, block, smem, stream>>>(  \
         queries, kQueriesPerBlock,                                      \
         coarseCentroids, pqCentroids,                                   \
         topQueryToCentroid, outCodeDistancesT);                         \
     }                                                                   \
   } while (0)
-#else
-#define CODE_DISTANCE(DIMS)                                             \
-  do {                                                                  \
-    if (!useFloat16Lookup) {                                            \
-      auto outCodeDistancesT = outCodeDistances.toTensor<float>();      \
-                                                                        \
-      pqCodeDistances<float, DIMS><<<grid, block, smem, stream>>>(      \
-        queries, kQueriesPerBlock,                                      \
-        coarseCentroids, pqCentroids,                                   \
-        topQueryToCentroid, outCodeDistancesT);                         \
-    }                                                                   \
+
+#define CODE_L2(DIMS)                           \
+  do {                                          \
+    if (l2Distance) {                           \
+      RUN_CODE(DIMS, true);                     \
+    } else {                                    \
+      RUN_CODE(DIMS, false);                    \
+    }                                           \
   } while (0)
-#endif
 
   switch (dimsPerSubQuantizer) {
     case 1:
-      CODE_DISTANCE(1);
+      CODE_L2(1);
       break;
     case 2:
-      CODE_DISTANCE(2);
+      CODE_L2(2);
       break;
     case 3:
-      CODE_DISTANCE(3);
+      CODE_L2(3);
       break;
     case 4:
-      CODE_DISTANCE(4);
+      CODE_L2(4);
       break;
     case 6:
-      CODE_DISTANCE(6);
+      CODE_L2(6);
       break;
     case 8:
-      CODE_DISTANCE(8);
+      CODE_L2(8);
       break;
     case 10:
-      CODE_DISTANCE(10);
+      CODE_L2(10);
       break;
     case 12:
-      CODE_DISTANCE(12);
+      CODE_L2(12);
       break;
     case 16:
-      CODE_DISTANCE(16);
+      CODE_L2(16);
+      break;
+    case 20:
+      CODE_L2(20);
+      break;
+    case 24:
+      CODE_L2(24);
+      break;
+    case 28:
+      CODE_L2(28);
       break;
     case 32:
-      CODE_DISTANCE(32);
+      CODE_L2(32);
       break;
       // FIXME: larger sizes require too many registers - we need the
       // MM implementation working
     default:
-      FAISS_ASSERT(false);
-      break;
+      FAISS_THROW_MSG("Too many dimensions (>32) per subquantizer "
+                      "not currently supported");
   }
 
-#undef CODE_DISTANCE
+#undef RUN_CODE
+#undef CODE_L2
 
-  CUDA_VERIFY(cudaGetLastError());
+  CUDA_TEST_ERROR();
 }
 
 } } // namespace

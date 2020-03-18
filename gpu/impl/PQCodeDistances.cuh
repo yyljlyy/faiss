@@ -1,18 +1,15 @@
-
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the CC-by-NC license found in the
+ * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 
 #pragma once
 
-#include "../utils/Tensor.cuh"
-#include "../utils/NoTypeTensor.cuh"
+#include <faiss/gpu/utils/Tensor.cuh>
+#include <faiss/gpu/utils/NoTypeTensor.cuh>
 #include <cublas_v2.h>
 
 namespace faiss { namespace gpu {
@@ -28,6 +25,7 @@ void runPQCodeDistances(Tensor<float, 3, true>& pqCentroids,
                         Tensor<float, 2, true>& coarseCentroids,
                         Tensor<int, 2, true>& topQueryToCentroid,
                         NoTypeTensor<4, true>& outCodeDistances,
+                        bool l2Distance,
                         bool useFloat16Lookup,
                         cudaStream_t stream);
 

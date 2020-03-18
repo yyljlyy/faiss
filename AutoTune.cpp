@@ -1,30 +1,40 @@
-
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the CC-by-NC license found in the
+ * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-/* Copyright 2004-present Facebook. All Rights Reserved.
-   implementation of Hyper-parameter auto-tuning
-*/
+// -*- c++ -*-
 
-#include "AutoTune.h"
+/*
+ * implementation of Hyper-parameter auto-tuning
+ */
 
-#include "FaissAssert.h"
-#include "utils.h"
+#include <faiss/AutoTune.h>
 
-#include "IndexFlat.h"
-#include "VectorTransform.h"
-#include "IndexLSH.h"
-#include "IndexPQ.h"
-#include "IndexIVF.h"
-#include "IndexIVFPQ.h"
-#include "MetaIndexes.h"
+#include <cmath>
 
+#include <faiss/impl/FaissAssert.h>
+#include <faiss/utils/utils.h>
+#include <faiss/utils/random.h>
 
+#include <faiss/IndexFlat.h>
+#include <faiss/VectorTransform.h>
+#include <faiss/IndexPreTransform.h>
+#include <faiss/IndexLSH.h>
+#include <faiss/IndexPQ.h>
+#include <faiss/IndexIVF.h>
+#include <faiss/IndexIVFPQ.h>
+#include <faiss/IndexIVFPQR.h>
+#include <faiss/IndexIVFFlat.h>
+#include <faiss/MetaIndexes.h>
+#include <faiss/IndexScalarQuantizer.h>
+#include <faiss/IndexHNSW.h>
+
+#include <faiss/IndexBinaryFlat.h>
+#include <faiss/IndexBinaryHNSW.h>
+#include <faiss/IndexBinaryIVF.h>
 
 namespace faiss {
 
@@ -52,22 +62,23 @@ OneRecallAtRCriterion::OneRecallAtRCriterion (idx_t nq, idx_t R):
     AutoTuneCriterion(nq, R), R(R)
 {}
 
-double OneRecallAtRCriterion::evaluate (const float *D, const idx_t *I) const
-{
-    FAISS_ASSERT ((gt_I.size() == gt_nnn * nq && gt_nnn >= 1 && nnn >= R) ||
-                  !"gound truth not initialized");
-    idx_t n_ok = 0;
-    for (idx_t q = 0; q < nq; q++) {
-        idx_t gt_nn = gt_I [q * gt_nnn];
-        const idx_t *I_line = I + q * nnn;
-        for (int i = 0; i < R; i++) {
-            if (I_line[i] == gt_nn) {
-                n_ok++;
-                break;
-            }
-        }
+double OneRecallAtRCriterion::evaluate(const float* /*D*/, const idx_t* I)
+    const {
+  FAISS_THROW_IF_NOT_MSG(
+      (gt_I.size() == gt_nnn * nq && gt_nnn >= 1 && nnn >= R),
+      "ground truth not initialized");
+  idx_t n_ok = 0;
+  for (idx_t q = 0; q < nq; q++) {
+    idx_t gt_nn = gt_I[q * gt_nnn];
+    const idx_t* I_line = I + q * nnn;
+    for (int i = 0; i < R; i++) {
+      if (I_line[i] == gt_nn) {
+        n_ok++;
+        break;
+      }
     }
-    return n_ok / double (nq);
+  }
+  return n_ok / double(nq);
 }
 
 
@@ -75,11 +86,12 @@ IntersectionCriterion::IntersectionCriterion (idx_t nq, idx_t R):
     AutoTuneCriterion(nq, R), R(R)
 {}
 
-double IntersectionCriterion::evaluate (const float *D, const idx_t *I) const
-{
-    FAISS_ASSERT ((gt_I.size() == gt_nnn * nq && gt_nnn >= R && nnn >= R) ||
-                  !"gound truth not initialized");
-    long n_ok = 0;
+double IntersectionCriterion::evaluate(const float* /*D*/, const idx_t* I)
+    const {
+    FAISS_THROW_IF_NOT_MSG(
+      (gt_I.size() == gt_nnn * nq && gt_nnn >= R && nnn >= R),
+      "ground truth not initialized");
+    int64_t n_ok = 0;
 #pragma omp parallel for reduction(+: n_ok)
     for (idx_t q = 0; q < nq; q++) {
         n_ok += ranklist_intersection_size (
@@ -111,7 +123,7 @@ void OperatingPoints::clear ()
 bool OperatingPoints::add (double perf, double t, const std::string & key,
                            size_t cno)
 {
-    OperatingPoint op = {perf, t, key, long(cno)};
+    OperatingPoint op = {perf, t, key, int64_t(cno)};
     all_pts.push_back (op);
     if (perf == 0) {
         return false;  // no method for 0 accuracy is faster than doing nothing
@@ -247,7 +259,8 @@ void OperatingPoints::display (bool only_optimal) const
 
 ParameterSpace::ParameterSpace ():
     verbose (1), n_experiments (500),
-    batchsize (1<<30), thread_over_batches (false)
+    batchsize (1<<30), thread_over_batches (false),
+    min_test_duration (0)
 {
 }
 
@@ -259,6 +272,7 @@ ParameterSpace::ParameterSpace ():
 ParameterSpace::ParameterSpace (Index *index):
     verbose (1), n_experiments (500),
     batchsize (1<<30), thread_over_batches (false)
+
 {
     initialize(index);
 }
@@ -320,6 +334,11 @@ static void init_pq_ParameterRange (const ProductQuantizer & pq,
 
 ParameterRange &ParameterSpace::add_range(const char * name)
 {
+    for (auto & pr : parameter_ranges) {
+        if (pr.name == name) {
+            return pr;
+        }
+    }
     parameter_ranges.push_back (ParameterRange ());
     parameter_ranges.back ().name = name;
     return parameter_ranges.back ();
@@ -344,11 +363,19 @@ void ParameterSpace::initialize (const Index * index)
     }
 
     if (DC (IndexIVF)) {
-        ParameterRange & pr = add_range("nprobe");
-        for (int i = 0; i < 13; i++) {
-            size_t nprobe = 1 << i;
-            if (nprobe >= ix->nlist) break;
-            pr.values.push_back (nprobe);
+        {
+            ParameterRange & pr = add_range("nprobe");
+            for (int i = 0; i < 13; i++) {
+                size_t nprobe = 1 << i;
+                if (nprobe >= ix->nlist) break;
+                pr.values.push_back (nprobe);
+            }
+        }
+        if (dynamic_cast<const IndexHNSW*>(ix->quantizer)) {
+            ParameterRange & pr = add_range("efSearch");
+            for (int i = 2; i <= 9; i++) {
+                pr.values.push_back (1 << i);
+            }
         }
     }
     if (DC (IndexPQ)) {
@@ -358,7 +385,9 @@ void ParameterSpace::initialize (const Index * index)
     if (DC (IndexIVFPQ)) {
         ParameterRange & pr = add_range("ht");
         init_pq_ParameterRange (ix->pq, pr);
+    }
 
+    if (DC (IndexIVF)) {
         const MultiIndexQuantizer *miq =
             dynamic_cast<const MultiIndexQuantizer *> (ix->quantizer);
         if (miq) {
@@ -366,13 +395,20 @@ void ParameterSpace::initialize (const Index * index)
             for (int i = 8; i < 20; i++) {
                 pr_max_codes.values.push_back (1 << i);
             }
-            pr_max_codes.values.push_back (1.0 / 0.0);
+            pr_max_codes.values.push_back (
+                std::numeric_limits<double>::infinity()
+            );
         }
     }
     if (DC (IndexIVFPQR)) {
-        assert (ix);
         ParameterRange & pr = add_range("k_factor");
         for (int i = 0; i <= 6; i++) {
+            pr.values.push_back (1 << i);
+        }
+    }
+    if (dynamic_cast<const IndexHNSW*>(index)) {
+        ParameterRange & pr = add_range("efSearch");
+        for (int i = 2; i <= 9; i++) {
             pr.values.push_back (1 << i);
         }
     }
@@ -410,7 +446,9 @@ void ParameterSpace::set_index_parameters (
          tok = strtok_r (nullptr, " ,", &ptr)) {
         char name[100];
         double val;
-        FAISS_ASSERT (sscanf (tok, "%100[^=]=%lf", name, &val) == 2);
+        int ret = sscanf (tok, "%100[^=]=%lf", name, &val);
+        FAISS_THROW_IF_NOT_FMT (
+           ret == 2, "could not interpret parameters %s", tok);
         set_index_parameter (index, name, val);
     }
 
@@ -424,31 +462,58 @@ void ParameterSpace::set_index_parameter (
 
     if (name == "verbose") {
         index->verbose = int(val);
+        // and fall through to also enable it on sub-indexes
     }
     if (DC (IndexPreTransform)) {
-        index = ix->index;
+        set_index_parameter (ix->index, name, val);
+        return;
     }
-    if (name == "verbose") {
-        index->verbose = int(val);
+    if (DC (IndexShards)) {
+        // call on all sub-indexes
+        auto fn =
+          [this, name, val](int, Index* subIndex) {
+            set_index_parameter(subIndex, name, val);
+          };
+
+        ix->runOnIndex(fn);
+        return;
+    }
+    if (DC (IndexReplicas)) {
+        // call on all sub-indexes
+        auto fn =
+          [this, name, val](int, Index* subIndex) {
+            set_index_parameter(subIndex, name, val);
+          };
+
+        ix->runOnIndex(fn);
+        return;
     }
     if (DC (IndexRefineFlat)) {
         if (name == "k_factor_rf") {
             ix->k_factor = int(val);
             return;
         }
-        index = ix->base_index;
+        // otherwise it is for the sub-index
+        set_index_parameter (&ix->refine_index, name, val);
+        return;
     }
-    if (DC (IndexPreTransform)) {
-        index = ix->index;
-    }
+
     if (name == "verbose") {
         index->verbose = int(val);
         return; // last verbose that we could find
     }
+
     if (name == "nprobe") {
-        DC(IndexIVF);
-        ix->nprobe = int(val);
-    } else if (name == "ht") {
+        if (DC (IndexIDMap)) {
+            set_index_parameter (ix->index, name, val);
+            return;
+        } else if (DC (IndexIVF)) {
+            ix->nprobe = int(val);
+            return;
+        }
+    }
+
+    if (name == "ht") {
         if (DC (IndexPQ)) {
             if (val >= ix->pq.code_size * 8) {
                 ix->search_type = IndexPQ::ST_PQ;
@@ -456,25 +521,47 @@ void ParameterSpace::set_index_parameter (
                 ix->search_type = IndexPQ::ST_polysemous;
                 ix->polysemous_ht = int(val);
             }
+            return;
         } else if (DC (IndexIVFPQ)) {
             if (val >= ix->pq.code_size * 8) {
                 ix->polysemous_ht = 0;
             } else {
                 ix->polysemous_ht = int(val);
             }
+            return;
         }
-    } else if (name == "k_factor") {
-        DC (IndexIVFPQR);
-        ix->k_factor = val;
-    } else if (name == "max_codes") {
-        DC (IndexIVFPQ);
-        ix->max_codes = finite(val) ? size_t(val) : 0;
-    } else {
-        fprintf(stderr,
-                "ParameterSpace::set_index_parameter:"
-                "could not set parameter %s\n",
-                name.c_str());
     }
+
+    if (name == "k_factor") {
+        if (DC (IndexIVFPQR)) {
+            ix->k_factor = val;
+            return;
+        }
+    }
+    if (name == "max_codes") {
+        if (DC (IndexIVF)) {
+            ix->max_codes = std::isfinite(val) ? size_t(val) : 0;
+            return;
+        }
+    }
+
+    if (name == "efSearch") {
+        if (DC (IndexHNSW)) {
+            ix->hnsw.efSearch = int(val);
+            return;
+        }
+        if (DC (IndexIVF)) {
+            if (IndexHNSW *cq =
+                dynamic_cast<IndexHNSW *>(ix->quantizer)) {
+                cq->hnsw.efSearch = int(val);
+                return;
+            }
+        }
+    }
+
+    FAISS_THROW_FMT ("ParameterSpace::set_index_parameter:"
+                     "could not set parameter %s",
+                     name.c_str());
 }
 
 void ParameterSpace::display () const
@@ -514,8 +601,8 @@ void ParameterSpace::explore (Index *index,
                               const AutoTuneCriterion & crit,
                               OperatingPoints * ops) const
 {
-    FAISS_ASSERT (nq == crit.nq ||
-                  !"criterion does not have the same nb of queries");
+    FAISS_THROW_IF_NOT_MSG (nq == crit.nq,
+                      "criterion does not have the same nb of queries");
 
     size_t n_comb = n_combinations ();
 
@@ -545,7 +632,7 @@ void ParameterSpace::explore (Index *index,
     int n_exp = n_experiments;
 
     if (n_exp > n_comb) n_exp = n_comb;
-    FAISS_ASSERT (n_comb == 1 || n_exp > 2);
+    FAISS_THROW_IF_NOT (n_comb == 1 || n_exp > 2);
     std::vector<int> perm (n_comb);
     // make sure the slowest and fastest experiment are run
     perm[0] = 0;
@@ -583,194 +670,50 @@ void ParameterSpace::explore (Index *index,
 
         double t0 = getmillisecs ();
 
-        if (thread_over_batches) {
-#pragma omp parallel for
-            for (size_t q0 = 0; q0 < nq; q0 += batchsize) {
-                size_t q1 = q0 + batchsize;
-                if (q1 > nq) q1 = nq;
-                index->search (q1 - q0, xq + q0 * index->d,
-                               crit.nnn,
-                               D.data() + q0 * crit.nnn,
-                               I.data() + q0 * crit.nnn);
-            }
-        } else {
-            for (size_t q0 = 0; q0 < nq; q0 += batchsize) {
-                size_t q1 = q0 + batchsize;
-                if (q1 > nq) q1 = nq;
-                index->search (q1 - q0, xq + q0 * index->d,
-                               crit.nnn,
-                               D.data() + q0 * crit.nnn,
-                               I.data() + q0 * crit.nnn);
-            }
-        }
+        int nrun = 0;
+        double t_search;
 
-        double t_search = (getmillisecs() - t0) / 1e3;
+        do {
+
+            if (thread_over_batches) {
+#pragma omp parallel for
+                for (size_t q0 = 0; q0 < nq; q0 += batchsize) {
+                    size_t q1 = q0 + batchsize;
+                    if (q1 > nq) q1 = nq;
+                    index->search (q1 - q0, xq + q0 * index->d,
+                                   crit.nnn,
+                                   D.data() + q0 * crit.nnn,
+                                   I.data() + q0 * crit.nnn);
+                }
+            } else {
+                for (size_t q0 = 0; q0 < nq; q0 += batchsize) {
+                    size_t q1 = q0 + batchsize;
+                    if (q1 > nq) q1 = nq;
+                    index->search (q1 - q0, xq + q0 * index->d,
+                                   crit.nnn,
+                                   D.data() + q0 * crit.nnn,
+                                   I.data() + q0 * crit.nnn);
+                }
+            }
+            nrun ++;
+            t_search = (getmillisecs() - t0) / 1e3;
+
+        } while (t_search < min_test_duration);
+
+        t_search /= nrun;
 
         double perf = crit.evaluate (D.data(), I.data());
 
         bool keep = ops->add (perf, t_search, combination_name (cno), cno);
 
         if (verbose)
-            printf(" perf %.3f t %.3f %s\n", perf, t_search,
+            printf(" perf %.3f t %.3f (%d runs) %s\n",
+                   perf, t_search, nrun,
                    keep ? "*" : "");
     }
 }
 
-/***************************************************************
- * index_factory
- ***************************************************************/
-
-Index *index_factory (int d, const char *description_in, MetricType metric)
-{
-    VectorTransform *vt = nullptr;
-    Index *coarse_quantizer = nullptr;
-    Index *index = nullptr;
-    bool add_idmap = false;
-    bool make_IndexRefineFlat = false;
-
-    char description[strlen(description_in) + 1];
-    char *ptr;
-    memcpy (description, description_in, strlen(description_in) + 1);
-
-    int ncentroids = -1;
-
-    for (char *tok = strtok_r (description, " ,", &ptr);
-         tok;
-         tok = strtok_r (nullptr, " ,", &ptr)) {
-        int d_out, opq_M, nbit, M, M2;
-        VectorTransform *vt_1 = nullptr;
-        Index *coarse_quantizer_1 = nullptr;
-        Index *index_1 = nullptr;
-
-        // VectorTransforms
-        if (sscanf (tok, "PCA%d", &d_out) == 1) {
-            vt_1 = new PCAMatrix (d, d_out);
-            d = d_out;
-        } else if (sscanf (tok, "PCAR%d", &d_out) == 1) {
-            vt_1 = new PCAMatrix (d, d_out, 0, true);
-            d = d_out;
-        } else if (sscanf (tok, "OPQ%d_%d", &opq_M, &d_out) == 2) {
-            vt_1 = new OPQMatrix (d, opq_M, d_out);
-            d = d_out;
-        } else if (sscanf (tok, "OPQ%d", &opq_M) == 1) {
-            vt_1 = new OPQMatrix (d, opq_M);
-            // coarse quantizers
-        } else if (sscanf (tok, "IVF%d", &ncentroids) == 1) {
-            if (metric == METRIC_L2) {
-                coarse_quantizer_1 = new IndexFlatL2 (d);
-            } else { // if (metric == METRIC_IP)
-                coarse_quantizer_1 = new IndexFlatIP (d);
-            }
-        } else if (sscanf (tok, "IMI2x%d", &nbit) == 1) {
-            FAISS_ASSERT(metric == METRIC_L2 ||
-                         !"MultiIndex not implemented for inner prod search");
-            coarse_quantizer_1 = new MultiIndexQuantizer (d, 2, nbit);
-            ncentroids = 1 << (2 * nbit);
-        } else if (strcmp(tok, "IDMap") == 0) {
-            add_idmap = true;
-
-            // IVFs
-        } else if (strcmp (tok, "Flat") == 0) {
-            if (coarse_quantizer) {
-                // if there was an IVF in front, then it is an IVFFlat
-                IndexIVF *index_ivf = new IndexIVFFlat (
-                    coarse_quantizer, d, ncentroids, metric);
-                index_ivf->quantizer_trains_alone =
-                    dynamic_cast<MultiIndexQuantizer*>(coarse_quantizer)
-                    != nullptr;
-                index_ivf->cp.spherical = metric == METRIC_INNER_PRODUCT;
-                index_ivf->own_fields = true;
-                index_1 = index_ivf;
-            } else {
-                index_1 = new IndexFlat (d, metric);
-                if (add_idmap) {
-                    IndexIDMap *idmap = new IndexIDMap(index_1);
-                    idmap->own_fields = true;
-                    index_1 = idmap;
-                    add_idmap = false;
-                }
-            }
-        } else if (sscanf (tok, "PQ%d+%d", &M, &M2) == 2) {
-            FAISS_ASSERT(coarse_quantizer ||
-                         !"PQ with + works only with an IVF");
-            FAISS_ASSERT(metric == METRIC_L2 ||
-                         !"IVFPQR not implemented for inner product search");
-            IndexIVFPQR *index_ivf = new IndexIVFPQR (
-                  coarse_quantizer, d, ncentroids, M, 8, M2, 8);
-            index_ivf->quantizer_trains_alone =
-                dynamic_cast<MultiIndexQuantizer*>(coarse_quantizer)
-                != nullptr;
-            index_ivf->own_fields = true;
-            index_1 = index_ivf;
-        } else if (sscanf (tok, "PQ%d", &M) == 1) {
-            if (coarse_quantizer) {
-                IndexIVFPQ *index_ivf = new IndexIVFPQ (
-                    coarse_quantizer, d, ncentroids, M, 8);
-                index_ivf->quantizer_trains_alone =
-                    dynamic_cast<MultiIndexQuantizer*>(coarse_quantizer)
-                    != nullptr;
-                index_ivf->metric_type = metric;
-                index_ivf->cp.spherical = metric == METRIC_INNER_PRODUCT;
-                index_ivf->own_fields = true;
-                index_ivf->do_polysemous_training = true;
-                index_1 = index_ivf;
-            } else {
-                IndexPQ *index_pq = new IndexPQ (d, M, 8, metric);
-                index_pq->do_polysemous_training = true;
-                index_1 = index_pq;
-                if (add_idmap) {
-                    IndexIDMap *idmap = new IndexIDMap(index_1);
-                    idmap->own_fields = true;
-                    index_1 = idmap;
-                    add_idmap = false;
-                }
-            }
-        } else if (strcmp (tok, "RFlat") == 0) {
-            make_IndexRefineFlat = true;
-        } else {
-            fprintf (stderr, "could not parse token \"%s\" in %s\n",
-                     tok, description_in);
-            FAISS_ASSERT (!"parse error");
-        }
-
-        if (vt_1)  {
-            FAISS_ASSERT (!vt || !"cannot apply two VectorTransforms");
-            vt = vt_1;
-        }
-
-        if (coarse_quantizer_1) {
-            FAISS_ASSERT (!coarse_quantizer ||
-                          !"cannot have 2 coarse quantizers");
-            coarse_quantizer = coarse_quantizer_1;
-        }
-
-        if (index_1) {
-            FAISS_ASSERT (!index || !"cannot have 2 indexes");
-            index = index_1;
-        }
-    }
-
-    if (add_idmap) {
-        fprintf(stderr, "index_factory: WARNING: "
-                "IDMap option not used\n");
-    }
-
-    if (vt) {
-        IndexPreTransform *index_pt = new IndexPreTransform (vt, index);
-        index_pt->own_fields = true;
-        index = index_pt;
-    }
-
-    if (make_IndexRefineFlat) {
-        IndexRefineFlat *index_rf = new IndexRefineFlat (index);
-        index_rf->own_fields = true;
-        index = index_rf;
-    }
-
-    return index;
-}
 
 
 
-
-}; // namespace faiss
+} // namespace faiss

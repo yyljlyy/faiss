@@ -1,12 +1,11 @@
-
-# Copyright (c) 2015-present, Facebook, Inc.
-# All rights reserved.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
-# This source code is licensed under the CC-by-NC license found in the
+# This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
 #! /usr/bin/env python2
 
+from __future__ import print_function
 import numpy as np
 import time
 import os
@@ -15,7 +14,7 @@ import faiss
 import re
 
 from multiprocessing.dummy import Pool as ThreadPool
-
+from datasets import ivecs_read
 
 ####################################################################
 # Parse command line
@@ -23,7 +22,7 @@ from multiprocessing.dummy import Pool as ThreadPool
 
 
 def usage():
-    print >>sys.stderr, """
+    print("""
 
 Usage: bench_gpu_1bn.py dataset indextype [options]
 
@@ -62,7 +61,7 @@ indextype: any index type supported by index_factory that runs on GPU.
                    %d will be replaced with the nprobe
 -oD xx%d.npy       output the search result distances to this file
 
-"""
+""", file=sys.stderr)
     sys.exit(1)
 
 
@@ -109,28 +108,18 @@ while args:
     elif not dbname:        dbname = a
     elif not index_key:     index_key = a
     else:
-        print >> sys.stderr, "argument %s unknown" % a
+        print("argument %s unknown" % a, file=sys.stderr)
         sys.exit(1)
 
 cacheroot = '/tmp/bench_gpu_1bn'
 
 if not os.path.isdir(cacheroot):
-    print "%s does not exist, creating it" % cacheroot
+    print("%s does not exist, creating it" % cacheroot)
     os.mkdir(cacheroot)
 
 #################################################################
 # Small Utility Functions
 #################################################################
-
-
-def ivecs_read(fname):
-    a = np.fromfile(fname, dtype='int32')
-    d = a[0]
-    return a.reshape(-1, d + 1)[:, 1:].copy()
-
-
-def fvecs_read(fname):
-    return ivecs_read(fname).view('float32')
 
 # we mem-map the biggest files to avoid having them in memory all at
 # once
@@ -181,7 +170,8 @@ def dataset_iterator(x, preproc, bs):
     block_ranges = [(i0, min(nb, i0 + bs))
                     for i0 in range(0, nb, bs)]
 
-    def prepare_block((i0, i1)):
+    def prepare_block(i01):
+        i0, i1 = i01
         xb = sanitize(x[i0:i1])
         return i0, preproc.apply_py(xb)
 
@@ -204,7 +194,7 @@ def eval_intersection_measure(gt_I, I):
 # Prepare dataset
 #################################################################
 
-print "Preparing dataset", dbname
+print("Preparing dataset", dbname)
 
 if dbname.startswith('SIFT'):
     # SIFT1M to SIFT1000M
@@ -227,7 +217,7 @@ elif dbname == 'Deep1B':
     gt_I = ivecs_read('deep1b/deep1B_groundtruth.ivecs')
 
 else:
-    print >> sys.stderr, 'unknown dataset', dbname
+    print('unknown dataset', dbname, file=sys.stderr)
     sys.exit(1)
 
 
@@ -243,9 +233,9 @@ if knngraph:
     gt_I = None
 
 
-print "sizes: B %s Q %s T %s gt %s" % (
+print("sizes: B %s Q %s T %s gt %s" % (
     xb.shape, xq.shape, xt.shape,
-    gt_I.shape if gt_I is not None else None)
+    gt_I.shape if gt_I is not None else None))
 
 
 
@@ -300,17 +290,17 @@ if not use_cache:
     cent_cachefile = None
     index_cachefile = None
 
-print "cachefiles:"
-print preproc_cachefile
-print cent_cachefile
-print index_cachefile
+print("cachefiles:")
+print(preproc_cachefile)
+print(cent_cachefile)
+print(index_cachefile)
 
 
 #################################################################
 # Wake up GPUs
 #################################################################
 
-print "preparing resources for %d GPUs" % ngpu
+print("preparing resources for %d GPUs" % ngpu)
 
 gpu_resources = []
 
@@ -339,7 +329,7 @@ def make_vres_vdev(i0=0, i1=-1):
 
 
 def compute_GT():
-    print "compute GT"
+    print("compute GT")
     t0 = time.time()
 
     gt_I = np.zeros((nq_gt, gt_sl), dtype='int64')
@@ -368,23 +358,23 @@ def compute_GT():
         heaps.addn_with_ids(
             gt_sl, faiss.swig_ptr(D), faiss.swig_ptr(I), gt_sl)
         db_gt_gpu.reset()
-        print "\r   %d/%d, %.3f s" % (i0, n, time.time() - t0),
-    print
+        print("\r   %d/%d, %.3f s" % (i0, n, time.time() - t0), end=' ')
+    print()
     heaps.reorder()
 
-    print "GT time: %.3f s" % (time.time() - t0)
+    print("GT time: %.3f s" % (time.time() - t0))
     return gt_I
 
 
 if knngraph:
 
     if gt_cachefile and os.path.exists(gt_cachefile):
-        print "load GT", gt_cachefile
+        print("load GT", gt_cachefile)
         gt_I = np.load(gt_cachefile)
     else:
         gt_I = compute_GT()
         if gt_cachefile:
-            print "store GT", gt_cachefile
+            print("store GT", gt_cachefile)
             np.save(gt_cachefile, gt_I)
 
 #################################################################
@@ -393,7 +383,7 @@ if knngraph:
 
 
 def train_preprocessor():
-    print "train preproc", preproc_str
+    print("train preproc", preproc_str)
     d = xt.shape[1]
     t0 = time.time()
     if preproc_str.startswith('OPQ'):
@@ -407,7 +397,7 @@ def train_preprocessor():
     else:
         assert False
     preproc.train(sanitize(xt[:1000000]))
-    print "preproc train done in %.3f s" % (time.time() - t0)
+    print("preproc train done in %.3f s" % (time.time() - t0))
     return preproc
 
 
@@ -416,10 +406,10 @@ def get_preprocessor():
         if not preproc_cachefile or not os.path.exists(preproc_cachefile):
             preproc = train_preprocessor()
             if preproc_cachefile:
-                print "store", preproc_cachefile
+                print("store", preproc_cachefile)
                 faiss.write_VectorTransform(preproc, preproc_cachefile)
         else:
-            print "load", preproc_cachefile
+            print("load", preproc_cachefile)
             preproc = faiss.read_VectorTransform(preproc_cachefile)
     else:
         d = xb.shape[1]
@@ -439,11 +429,11 @@ def train_coarse_quantizer(x, k, preproc):
     # clus.niter = 2
     clus.max_points_per_centroid = 10000000
 
-    print "apply preproc on shape", x.shape, 'k=', k
+    print("apply preproc on shape", x.shape, 'k=', k)
     t0 = time.time()
     x = preproc.apply_py(sanitize(x))
-    print "   preproc %.3f s output shape %s" % (
-        time.time() - t0, x.shape)
+    print("   preproc %.3f s output shape %s" % (
+        time.time() - t0, x.shape))
 
     vres, vdev = make_vres_vdev()
     index = faiss.index_cpu_to_gpu_multiple(
@@ -458,16 +448,16 @@ def train_coarse_quantizer(x, k, preproc):
 def prepare_coarse_quantizer(preproc):
 
     if cent_cachefile and os.path.exists(cent_cachefile):
-        print "load centroids", cent_cachefile
+        print("load centroids", cent_cachefile)
         centroids = np.load(cent_cachefile)
     else:
         nt = max(1000000, 256 * ncent)
-        print "train coarse quantizer..."
+        print("train coarse quantizer...")
         t0 = time.time()
         centroids = train_coarse_quantizer(xt[:nt], ncent, preproc)
-        print "Coarse train time: %.3f s" % (time.time() - t0)
+        print("Coarse train time: %.3f s" % (time.time() - t0))
         if cent_cachefile:
-            print "store centroids", cent_cachefile
+            print("store centroids", cent_cachefile)
             np.save(cent_cachefile, centroids)
 
     coarse_quantizer = faiss.IndexFlatL2(preproc.d_out)
@@ -486,13 +476,13 @@ def prepare_trained_index(preproc):
     coarse_quantizer = prepare_coarse_quantizer(preproc)
     d = preproc.d_out
     if pqflat_str == 'Flat':
-        print "making an IVFFlat index"
+        print("making an IVFFlat index")
         idx_model = faiss.IndexIVFFlat(coarse_quantizer, d, ncent,
                                        faiss.METRIC_L2)
     else:
         m = int(pqflat_str[2:])
         assert m < 56 or use_float16, "PQ%d will work only with -float16" % m
-        print "making an IVFPQ index, m = ", m
+        print("making an IVFPQ index, m = ", m)
         idx_model = faiss.IndexIVFPQ(coarse_quantizer, d, ncent, m, 8)
 
     coarse_quantizer.this.disown()
@@ -500,10 +490,10 @@ def prepare_trained_index(preproc):
 
     # finish training on CPU
     t0 = time.time()
-    print "Training vector codes"
+    print("Training vector codes")
     x = preproc.apply_py(sanitize(xt[:1000000]))
     idx_model.train(x)
-    print "  done %.3f s" % (time.time() - t0)
+    print("  done %.3f s" % (time.time() - t0))
 
     return idx_model
 
@@ -519,45 +509,51 @@ def compute_populated_index(preproc):
     co.useFloat16CoarseQuantizer = False
     co.usePrecomputed = use_precomputed_tables
     co.indicesOptions = faiss.INDICES_CPU
-    co.verbose = 10
+    co.verbose = True
     co.reserveVecs = max_add if max_add > 0 else xb.shape[0]
     co.shard = True
-
+    assert co.shard_type in (0, 1, 2)
     vres, vdev = make_vres_vdev()
     gpu_index = faiss.index_cpu_to_gpu_multiple(
         vres, vdev, indexall, co)
 
-    print "add..."
+    print("add...")
     t0 = time.time()
     nb = xb.shape[0]
     for i0, xs in dataset_iterator(xb, preproc, add_batch_size):
         i1 = i0 + xs.shape[0]
         gpu_index.add_with_ids(xs, np.arange(i0, i1))
         if max_add > 0 and gpu_index.ntotal > max_add:
-            print "Flush indexes to CPU"
+            print("Flush indexes to CPU")
             for i in range(ngpu):
                 index_src_gpu = faiss.downcast_index(gpu_index.at(i))
                 index_src = faiss.index_gpu_to_cpu(index_src_gpu)
-                print "  index %d size %d" % (i, index_src.ntotal)
+                print("  index %d size %d" % (i, index_src.ntotal))
                 index_src.copy_subset_to(indexall, 0, 0, nb)
                 index_src_gpu.reset()
                 index_src_gpu.reserveMemory(max_add)
             gpu_index.sync_with_shard_indexes()
 
-        print '\r%d/%d (%.3f s)  ' % (
-            i0, nb, time.time() - t0),
+        print('\r%d/%d (%.3f s)  ' % (
+            i0, nb, time.time() - t0), end=' ')
         sys.stdout.flush()
-    print "Add time: %.3f s" % (time.time() - t0)
+    print("Add time: %.3f s" % (time.time() - t0))
 
-    print "Aggregate indexes to CPU"
+    print("Aggregate indexes to CPU")
     t0 = time.time()
 
-    for i in range(ngpu):
-        index_src = faiss.index_gpu_to_cpu(gpu_index.at(i))
-        print "  index %d size %d" % (i, index_src.ntotal)
+    if hasattr(gpu_index, 'at'):
+        # it is a sharded index
+        for i in range(ngpu):
+            index_src = faiss.index_gpu_to_cpu(gpu_index.at(i))
+            print("  index %d size %d" % (i, index_src.ntotal))
+            index_src.copy_subset_to(indexall, 0, 0, nb)
+    else:
+        # simple index
+        index_src = faiss.index_gpu_to_cpu(gpu_index)
         index_src.copy_subset_to(indexall, 0, 0, nb)
 
-    print "  done in %.3f s" % (time.time() - t0)
+    print("  done in %.3f s" % (time.time() - t0))
 
     if max_add > 0:
         # it does not contain all the vectors
@@ -580,13 +576,14 @@ def compute_populated_index_2(preproc):
     coarse_quantizer_gpu = faiss.index_cpu_to_gpu_multiple(
         vres, vdev, indexall.quantizer)
 
-    def quantize((i0, xs)):
+    def quantize(args):
+        (i0, xs) = args
         _, assign = coarse_quantizer_gpu.search(xs, 1)
         return i0, xs, assign.ravel()
 
     stage2 = rate_limited_imap(quantize, stage1)
 
-    print "add..."
+    print("add...")
     t0 = time.time()
     nb = xb.shape[0]
 
@@ -601,10 +598,10 @@ def compute_populated_index_2(preproc):
         else:
             assert False
 
-        print '\r%d/%d (%.3f s)  ' % (
-            i0, nb, time.time() - t0),
+        print('\r%d/%d (%.3f s)  ' % (
+            i0, nb, time.time() - t0), end=' ')
         sys.stdout.flush()
-    print "Add time: %.3f s" % (time.time() - t0)
+    print("Add time: %.3f s" % (time.time() - t0))
 
     return None, indexall
 
@@ -618,10 +615,10 @@ def get_populated_index(preproc):
         else:
             gpu_index, indexall = compute_populated_index_2(preproc)
         if index_cachefile:
-            print "store", index_cachefile
+            print("store", index_cachefile)
             faiss.write_index(indexall, index_cachefile)
     else:
-        print "load", index_cachefile
+        print("load", index_cachefile)
         indexall = faiss.read_index(index_cachefile)
         gpu_index = None
 
@@ -630,14 +627,14 @@ def get_populated_index(preproc):
     co.useFloat16CoarseQuantizer = False
     co.usePrecomputed = use_precomputed_tables
     co.indicesOptions = 0
-    co.verbose = 10
-    co.shard = True # the replicas will be made "manually"
+    co.verbose = True
+    co.shard = True    # the replicas will be made "manually"
     t0 = time.time()
-    print "CPU index contains %d vectors, move to GPU" % indexall.ntotal
+    print("CPU index contains %d vectors, move to GPU" % indexall.ntotal)
     if replicas == 1:
 
         if not gpu_index:
-            print "copying loaded index to GPUs"
+            print("copying loaded index to GPUs")
             vres, vdev = make_vres_vdev()
             index = faiss.index_cpu_to_gpu_multiple(
                 vres, vdev, indexall, co)
@@ -647,16 +644,16 @@ def get_populated_index(preproc):
     else:
         del gpu_index # We override the GPU index
 
-        print "Copy CPU index to %d sharded GPU indexes" % replicas
+        print("Copy CPU index to %d sharded GPU indexes" % replicas)
 
-        index = faiss.IndexProxy()
+        index = faiss.IndexReplicas()
 
         for i in range(replicas):
             gpu0 = ngpu * i / replicas
             gpu1 = ngpu * (i + 1) / replicas
             vres, vdev = make_vres_vdev(gpu0, gpu1)
 
-            print "   dispatch to GPUs %d:%d" % (gpu0, gpu1)
+            print("   dispatch to GPUs %d:%d" % (gpu0, gpu1))
 
             index1 = faiss.index_cpu_to_gpu_multiple(
                 vres, vdev, indexall, co)
@@ -664,7 +661,7 @@ def get_populated_index(preproc):
             index.addIndex(index1)
         index.own_fields = True
     del indexall
-    print "move to GPU done in %.3f s" % (time.time() - t0)
+    print("move to GPU done in %.3f s" % (time.time() - t0))
     return index
 
 
@@ -680,7 +677,7 @@ def eval_dataset(index, preproc):
     ps.initialize(index)
 
     nq_gt = gt_I.shape[0]
-    print "search..."
+    print("search...")
     sl = query_batch_size
     nq = xq.shape[0]
     for nprobe in nprobes:
@@ -696,8 +693,8 @@ def eval_dataset(index, preproc):
             inter_res = ''
 
             for i0, xs in dataset_iterator(xq, preproc, sl):
-                print '\r%d/%d (%.3f s%s)   ' % (
-                    i0, nq, time.time() - t0, inter_res),
+                print('\r%d/%d (%.3f s%s)   ' % (
+                    i0, nq, time.time() - t0, inter_res), end=' ')
                 sys.stdout.flush()
 
                 i1 = i0 + xs.shape[0]
@@ -714,24 +711,24 @@ def eval_dataset(index, preproc):
         t1 = time.time()
         if knngraph:
             ires = eval_intersection_measure(gt_I[:, :nnn], I[:nq_gt])
-            print "  probe=%-3d: %.3f s rank-%d intersection results: %.4f" % (
-                nprobe, t1 - t0, nnn, ires)
+            print("  probe=%-3d: %.3f s rank-%d intersection results: %.4f" % (
+                nprobe, t1 - t0, nnn, ires))
         else:
-            print "  probe=%-3d: %.3f s" % (nprobe, t1 - t0),
+            print("  probe=%-3d: %.3f s" % (nprobe, t1 - t0), end=' ')
             gtc = gt_I[:, :1]
             nq = xq.shape[0]
             for rank in 1, 10, 100:
                 if rank > nnn: continue
                 nok = (I[:, :rank] == gtc).sum()
-                print "1-R@%d: %.4f" % (rank, nok / float(nq)),
-            print
+                print("1-R@%d: %.4f" % (rank, nok / float(nq)), end=' ')
+            print()
         if I_fname:
             I_fname_i = I_fname % I
-            print "storing", I_fname_i
+            print("storing", I_fname_i)
             np.save(I, I_fname_i)
         if D_fname:
             D_fname_i = I_fname % I
-            print "storing", D_fname_i
+            print("storing", D_fname_i)
             np.save(D, D_fname_i)
 
 

@@ -1,15 +1,12 @@
-
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the CC-by-NC license found in the
+ * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
-#include "../WarpSelectKernel.cuh"
-#include "../Limits.cuh"
+#include <faiss/gpu/utils/WarpSelectKernel.cuh>
+#include <faiss/gpu/utils/Limits.cuh>
 
 #define WARP_SELECT_DECL(TYPE, DIR, WARP_Q)                             \
   extern void runWarpSelect_ ## TYPE ## _ ## DIR ## _ ## WARP_Q ## _(   \
@@ -42,6 +39,7 @@
                                                                         \
     warpSelect<TYPE, int, DIR, WARP_Q, THREAD_Q, kWarpSelectNumThreads> \
       <<<grid, block, 0, stream>>>(in, outK, outV, kInit, vInit, k);    \
+    CUDA_TEST_ERROR();                                                  \
   }
 
 #define WARP_SELECT_CALL(TYPE, DIR, WARP_Q)                     \

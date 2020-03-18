@@ -1,13 +1,10 @@
-
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the CC-by-NC license found in the
+ * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved
 // -*- c++ -*-
 
 #ifndef INDEX_FLAT_H
@@ -15,7 +12,7 @@
 
 #include <vector>
 
-#include "Index.h"
+#include <faiss/Index.h>
 
 
 namespace faiss {
@@ -25,32 +22,26 @@ struct IndexFlat: Index {
     /// database vectors, size ntotal * d
     std::vector<float> xb;
 
-    explicit IndexFlat (idx_t d, MetricType metric = METRIC_INNER_PRODUCT);
+    explicit IndexFlat (idx_t d, MetricType metric = METRIC_L2);
 
-    virtual void set_typename() override;
+    void add(idx_t n, const float* x) override;
 
-    virtual void add (idx_t n, const float *x) override;
+    void reset() override;
 
-    virtual void reset() override;
+    void search(
+        idx_t n,
+        const float* x,
+        idx_t k,
+        float* distances,
+        idx_t* labels) const override;
 
-    virtual void search (
-            idx_t n,
-            const float *x,
-            idx_t k,
-            float *distances,
-            idx_t *labels) const override;
+    void range_search(
+        idx_t n,
+        const float* x,
+        float radius,
+        RangeSearchResult* result) const override;
 
-
-
-    virtual void range_search (
-            idx_t n,
-            const float *x,
-            float radius,
-            RangeSearchResult *result) const override;
-
-    virtual void reconstruct (idx_t key, float * recons)
-        const override;
-
+    void reconstruct(idx_t key, float* recons) const override;
 
     /** compute distance with a subset of vectors
      *
@@ -67,7 +58,24 @@ struct IndexFlat: Index {
             float *distances,
             const idx_t *labels) const;
 
+    /** remove some ids. NB that Because of the structure of the
+     * indexing structure, the semantics of this operation are
+     * different from the usual ones: the new ids are shifted */
+    size_t remove_ids(const IDSelector& sel) override;
+
     IndexFlat () {}
+
+    DistanceComputer * get_distance_computer() const override;
+
+    /* The stanadlone codec interface (just memcopies in this case) */
+    size_t sa_code_size () const override;
+
+    void sa_encode (idx_t n, const float *x,
+                          uint8_t *bytes) const override;
+
+    void sa_decode (idx_t n, const uint8_t *bytes,
+                            float *x) const override;
+
 };
 
 
@@ -90,12 +98,12 @@ struct IndexFlatL2BaseShift: IndexFlatL2 {
 
     IndexFlatL2BaseShift (idx_t d, size_t nshift, const float *shift);
 
-    virtual void search (
-            idx_t n,
-            const float *x,
-            idx_t k,
-            float *distances,
-            idx_t *labels) const override;
+    void search(
+        idx_t n,
+        const float* x,
+        idx_t k,
+        float* distances,
+        idx_t* labels) const override;
 };
 
 
@@ -119,22 +127,20 @@ struct IndexRefineFlat: Index {
 
     IndexRefineFlat ();
 
-    virtual void train (idx_t n, const float *x) override;
+    void train(idx_t n, const float* x) override;
 
-    virtual void add (idx_t n, const float *x) override;
+    void add(idx_t n, const float* x) override;
 
-    virtual void reset() override;
+    void reset() override;
 
-    virtual void search (
-            idx_t n,
-            const float *x,
-            idx_t k,
-            float *distances,
-            idx_t *labels) const override;
+    void search(
+        idx_t n,
+        const float* x,
+        idx_t k,
+        float* distances,
+        idx_t* labels) const override;
 
-    virtual void set_typename () override;
-
-    virtual ~IndexRefineFlat ();
+    ~IndexRefineFlat() override;
 };
 
 
@@ -150,19 +156,17 @@ struct IndexFlat1D:IndexFlatL2 {
     /// the first search
     void update_permutation ();
 
-    virtual void add (idx_t n, const float *x) override;
+    void add(idx_t n, const float* x) override;
 
-    virtual void reset() override;
+    void reset() override;
 
     /// Warn: the distances returned are L1 not L2
-    virtual void search (
-            idx_t n,
-            const float *x,
-            idx_t k,
-            float *distances,
-            idx_t *labels) const override;
-
-
+    void search(
+        idx_t n,
+        const float* x,
+        idx_t k,
+        float* distances,
+        idx_t* labels) const override;
 };
 
 

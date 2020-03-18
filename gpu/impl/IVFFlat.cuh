@@ -1,17 +1,15 @@
-
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the CC-by-NC license found in the
+ * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 
 #pragma once
 
-#include "IVFBase.cuh"
+#include <faiss/gpu/impl/IVFBase.cuh>
+#include <faiss/gpu/impl/GpuScalarQuantizer.cuh>
 
 namespace faiss { namespace gpu {
 
@@ -21,16 +19,20 @@ class IVFFlat : public IVFBase {
   IVFFlat(GpuResources* resources,
           /// We do not own this reference
           FlatIndex* quantizer,
-          bool l2Distance,
-          bool useFloat16,
-          IndicesOptions indicesOptions);
+          faiss::MetricType metric,
+          float metricArg,
+          bool useResidual,
+          /// Optional ScalarQuantizer
+          faiss::ScalarQuantizer* scalarQ,
+          IndicesOptions indicesOptions,
+          MemorySpace space);
 
   ~IVFFlat() override;
 
   /// Add vectors to a specific list; the input data can be on the
   /// host or on our current device
   void addCodeVectorsFromCpu(int listId,
-                             const float* vecs,
+                             const unsigned char* vecs,
                              const long* indices,
                              size_t numVecs);
 
@@ -49,19 +51,16 @@ class IVFFlat : public IVFBase {
              Tensor<float, 2, true>& outDistances,
              Tensor<long, 2, true>& outIndices);
 
-  /// Return the vectors of a particular list back to the CPU
-  std::vector<float> getListVectors(int listId) const;
-
  private:
   /// Returns the size of our stored vectors, in bytes
   size_t getVectorMemorySize() const;
 
  private:
-  /// Calculating L2 distance or inner product?
-  const bool l2Distance_;
+  /// Do we encode the residual from a coarse quantizer or not?
+  bool useResidual_;
 
-  /// Do we store data internally as float16 (versus float32)?
-  const bool useFloat16_;
+  /// Scalar quantizer for encoded vectors, if any
+  std::unique_ptr<GpuScalarQuantizer> scalarQ_;
 };
 
 } } // namespace

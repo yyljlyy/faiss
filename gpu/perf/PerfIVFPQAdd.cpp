@@ -1,23 +1,20 @@
-
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the CC-by-NC license found in the
+ * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 
 
 #include <cuda_profiler_api.h>
-#include "../../IndexFlat.h"
-#include "../../IndexIVFPQ.h"
-#include "../GpuIndexIVFPQ.h"
-#include "../StandardGpuResources.h"
-#include "../test/TestUtils.h"
-#include "../utils/DeviceUtils.h"
-#include "../utils/Timer.h"
+#include <faiss/IndexFlat.h>
+#include <faiss/IndexIVFPQ.h>
+#include <faiss/gpu/GpuIndexIVFPQ.h>
+#include <faiss/gpu/StandardGpuResources.h>
+#include <faiss/gpu/test/TestUtils.h>
+#include <faiss/gpu/utils/DeviceUtils.h>
+#include <faiss/gpu/utils/Timer.h>
 #include <gflags/gflags.h>
 #include <map>
 #include <vector>
@@ -35,7 +32,7 @@ DEFINE_bool(per_batch_time, false, "print per-batch times");
 DEFINE_bool(reserve_memory, false, "whether or not to pre-reserve memory");
 
 int main(int argc, char** argv) {
-  google::ParseCommandLineFlags(&argc, &argv, true);
+  gflags::ParseCommandLineFlags(&argc, &argv, true);
 
   cudaProfilerStop();
 
@@ -57,13 +54,13 @@ int main(int argc, char** argv) {
     cpuIndex.train(numTrain, trainVecs.data());
   }
 
+  faiss::gpu::GpuIndexIVFPQConfig config;
+  config.device = 0;
+  config.indicesOptions = (faiss::gpu::IndicesOptions) FLAGS_index;
+
   faiss::gpu::GpuIndexIVFPQ gpuIndex(
-    &res, 0,
-    dim, numCentroids, bytesPerVec, bitsPerCode,
-    false,
-    (faiss::gpu::IndicesOptions) FLAGS_index,
-    false,
-    faiss::METRIC_L2);
+    &res, dim, numCentroids, bytesPerVec, bitsPerCode,
+    faiss::METRIC_L2, config);
 
   if (FLAGS_time_gpu) {
     gpuIndex.train(numTrain, trainVecs.data());

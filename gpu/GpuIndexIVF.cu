@@ -1,180 +1,143 @@
-
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the CC-by-NC license found in the
+ * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 
-#include "GpuIndexIVF.h"
-#include "../FaissAssert.h"
-#include "../IndexFlat.h"
-#include "../IndexIVF.h"
-#include "GpuIndexFlat.h"
-#include "utils/DeviceUtils.h"
-#include "utils/Float16.cuh"
+#include <faiss/gpu/GpuIndexIVF.h>
+#include <faiss/impl/FaissAssert.h>
+#include <faiss/IndexFlat.h>
+#include <faiss/IndexIVF.h>
+#include <faiss/gpu/GpuIndexFlat.h>
+#include <faiss/gpu/utils/DeviceUtils.h>
+#include <faiss/gpu/utils/Float16.cuh>
 
 namespace faiss { namespace gpu {
 
 GpuIndexIVF::GpuIndexIVF(GpuResources* resources,
-                         int device,
-                         IndicesOptions indicesOptions,
-                         bool useFloat16CoarseQuantizer,
                          int dims,
                          faiss::MetricType metric,
-                         int nlist) :
-    GpuIndex(resources, device, dims, metric),
-    indicesOptions_(indicesOptions),
-    useFloat16CoarseQuantizer_(useFloat16CoarseQuantizer),
-    nlist_(nlist),
-    nprobe_(1),
-    quantizer_(nullptr),
-    ownsQuantizer_(true) {
-#ifndef FAISS_USE_FLOAT16
-  FAISS_ASSERT(!useFloat16CoarseQuantizer_,
-               "float16 unsupported; need CUDA SDK >= 7.5");
-#endif
-
+                         float metricArg,
+                         int nlistIn,
+                         GpuIndexIVFConfig config) :
+    GpuIndex(resources, dims, metric, metricArg, config),
+    ivfConfig_(std::move(config)),
+    nlist(nlistIn),
+    nprobe(1),
+    quantizer(nullptr) {
   init_();
-}
 
-GpuIndexIVF::GpuIndexIVF(GpuResources* resources,
-                         int device,
-                         IndicesOptions indicesOptions,
-                         int dims,
-                         faiss::MetricType metric,
-                         int nlist,
-                         GpuIndexFlat* quantizer) :
-    GpuIndex(resources, device, dims, metric),
-    indicesOptions_(indicesOptions),
-    useFloat16CoarseQuantizer_(quantizer->getUseFloat16()),
-    nlist_(nlist),
-    nprobe_(1),
-    quantizer_(quantizer),
-    ownsQuantizer_(false) {
-#ifndef FAISS_USE_FLOAT16
-  FAISS_ASSERT(!useFloat16CoarseQuantizer_,
-               "float16 unsupported; need CUDA SDK >= 7.5");
-#endif
-
-  FAISS_ASSERT(quantizer_->d == this->d);
-  FAISS_ASSERT(quantizer_->metric_type == this->metric_type);
-
-  init_();
+  // Only IP and L2 are supported for now
+  if (!(metric_type == faiss::METRIC_L2 ||
+        metric_type == faiss::METRIC_INNER_PRODUCT)) {
+    FAISS_THROW_FMT("unsupported metric type %d", (int) metric_type);
+  }
 }
 
 void
 GpuIndexIVF::init_() {
-  FAISS_ASSERT(nlist_ > 0);
+  FAISS_THROW_IF_NOT_MSG(nlist > 0, "nlist must be > 0");
 
   // Spherical by default if the metric is inner_product
-  if (this->metric_type == faiss::METRIC_INNER_PRODUCT) {
-    cp_.spherical = true;
+  if (metric_type == faiss::METRIC_INNER_PRODUCT) {
+    cp.spherical = true;
   }
 
   // here we set a low # iterations because this is typically used
   // for large clusterings
-  cp_.niter = 10;
-  cp_.verbose = this->verbose;
+  cp.niter = 10;
+  cp.verbose = verbose;
 
-  if (!quantizer_) {
+  if (!quantizer) {
     // Construct an empty quantizer
-    if (this->metric_type == faiss::METRIC_L2) {
-      // FIXME: 2 different float16 options?
-      quantizer_ = new GpuIndexFlatL2(resources_, device_, this->d,
-                                      useFloat16CoarseQuantizer_);
-    } else if (this->metric_type == faiss::METRIC_INNER_PRODUCT) {
-      // FIXME: 2 different float16 options?
-      quantizer_ = new GpuIndexFlatIP(resources_, device_, this->d,
-                                      useFloat16CoarseQuantizer_);
+    GpuIndexFlatConfig config = ivfConfig_.flatConfig;
+    // FIXME: inherit our same device
+    config.device = device_;
+
+    if (metric_type == faiss::METRIC_L2) {
+      quantizer = new GpuIndexFlatL2(resources_, d, config);
+    } else if (metric_type == faiss::METRIC_INNER_PRODUCT) {
+      quantizer = new GpuIndexFlatIP(resources_, d, config);
     } else {
       // unknown metric type
-      FAISS_ASSERT(false);
+      FAISS_THROW_FMT("unsupported metric type %d", (int) metric_type);
     }
   }
 }
 
 GpuIndexIVF::~GpuIndexIVF() {
-  if (ownsQuantizer_) {
-    delete quantizer_;
-  }
+  delete quantizer;
 }
 
-IndicesOptions
-GpuIndexIVF::getIndicesOptions() const {
-  return indicesOptions_;
-}
-
-bool
-GpuIndexIVF::getUseFloat16CoarseQuantizer() const {
-  return useFloat16CoarseQuantizer_;
+GpuIndexFlat*
+GpuIndexIVF::getQuantizer() {
+  return quantizer;
 }
 
 void
 GpuIndexIVF::copyFrom(const faiss::IndexIVF* index) {
   DeviceScope scope(device_);
 
-  this->d = index->d;
-  this->metric_type = index->metric_type;
+  GpuIndex::copyFrom(index);
 
   FAISS_ASSERT(index->nlist > 0);
-  FAISS_ASSERT(index->nlist <=
-               (faiss::Index::idx_t) std::numeric_limits<int>::max());
-  nlist_ = index->nlist;
-  nprobe_ = index->nprobe;
+  FAISS_THROW_IF_NOT_FMT(index->nlist <=
+                     (faiss::Index::idx_t) std::numeric_limits<int>::max(),
+                     "GPU index only supports %zu inverted lists",
+                     (size_t) std::numeric_limits<int>::max());
+  nlist = index->nlist;
+
+  FAISS_THROW_IF_NOT_FMT(index->nprobe > 0 &&
+                         index->nprobe <= getMaxKSelection(),
+                         "GPU index only supports nprobe <= %zu; passed %zu",
+                         (size_t) getMaxKSelection(),
+                         index->nprobe);
+  nprobe = index->nprobe;
 
   // The metric type may have changed as well, so we might have to
   // change our quantizer
-  delete quantizer_;
-  quantizer_ = nullptr;
+  delete quantizer;
+  quantizer = nullptr;
+
+  // Construct an empty quantizer
+  GpuIndexFlatConfig config = ivfConfig_.flatConfig;
+  // FIXME: inherit our same device
+  config.device = device_;
 
   if (index->metric_type == faiss::METRIC_L2) {
     // FIXME: 2 different float16 options?
-    quantizer_ = new GpuIndexFlatL2(resources_, device_, this->d,
-                                    useFloat16CoarseQuantizer_);
+    quantizer = new GpuIndexFlatL2(resources_, this->d, config);
   } else if (index->metric_type == faiss::METRIC_INNER_PRODUCT) {
     // FIXME: 2 different float16 options?
-    quantizer_ = new GpuIndexFlatIP(resources_, device_, this->d,
-                                    useFloat16CoarseQuantizer_);
+    quantizer = new GpuIndexFlatIP(resources_, this->d, config);
   } else {
     // unknown metric type
     FAISS_ASSERT(false);
   }
 
   if (!index->is_trained) {
-    this->is_trained = false;
-    this->ntotal = 0;
+    // copied in GpuIndex::copyFrom
+    FAISS_ASSERT(!is_trained && ntotal == 0);
     return;
   }
 
-  // Otherwise, we can populate ourselves from the other index
-  this->is_trained = true;
-
-  // Only use `int` on GPU
-  FAISS_ASSERT(index->ntotal <=
-               (faiss::Index::idx_t) std::numeric_limits<int>::max());
-  this->ntotal = index->ntotal;
+  // copied in GpuIndex::copyFrom
+  // ntotal can exceed max int, but the number of vectors per inverted
+  // list cannot exceed this. We check this in the subclasses.
+  FAISS_ASSERT(is_trained && (ntotal == index->ntotal));
 
   // Since we're trained, the quantizer must have data
   FAISS_ASSERT(index->quantizer->ntotal > 0);
 
-  if (index->metric_type == faiss::METRIC_L2) {
-    auto q = dynamic_cast<faiss::IndexFlatL2*>(index->quantizer);
-    FAISS_ASSERT(q);
+  // Right now, we can only handle IndexFlat or derived classes
+  auto qFlat = dynamic_cast<faiss::IndexFlat*>(index->quantizer);
+  FAISS_THROW_IF_NOT_MSG(qFlat,
+                         "Only IndexFlat is supported for the coarse quantizer "
+                         "for copying from an IndexIVF into a GpuIndexIVF");
 
-    quantizer_->copyFrom(q);
-  } else if (index->metric_type == faiss::METRIC_INNER_PRODUCT) {
-    auto q = dynamic_cast<faiss::IndexFlatIP*>(index->quantizer);
-    FAISS_ASSERT(q);
-
-    quantizer_->copyFrom(q);
-  } else {
-    // unknown metric type
-    FAISS_ASSERT(false);
-  }
+  quantizer->copyFrom(qFlat);
 }
 
 void
@@ -184,16 +147,13 @@ GpuIndexIVF::copyTo(faiss::IndexIVF* index) const {
   //
   // Index information
   //
-  index->ntotal = this->ntotal;
-  index->d = this->d;
-  index->metric_type = this->metric_type;
-  index->is_trained = this->is_trained;
+  GpuIndex::copyTo(index);
 
   //
   // IndexIVF information
   //
-  index->nlist = nlist_;
-  index->nprobe = nprobe_;
+  index->nlist = nlist;
+  index->nprobe = nprobe;
 
   // Construct and copy the appropriate quantizer
   faiss::IndexFlat* q = nullptr;
@@ -205,53 +165,47 @@ GpuIndexIVF::copyTo(faiss::IndexIVF* index) const {
     q = new faiss::IndexFlatIP(this->d);
 
   } else {
-    // unknown metric type
+    // we should have one of the above metrics
     FAISS_ASSERT(false);
   }
 
-  FAISS_ASSERT(quantizer_);
-  quantizer_->copyTo(q);
+  FAISS_ASSERT(quantizer);
+  quantizer->copyTo(q);
 
   if (index->own_fields) {
     delete index->quantizer;
   }
 
   index->quantizer = q;
-  index->quantizer_trains_alone = false;
+  index->quantizer_trains_alone = 0;
   index->own_fields = true;
-  index->cp = cp_;
-  index->ids.clear();
-  index->ids.resize(nlist_);
-  index->maintain_direct_map = false;
-  index->direct_map.clear();
+  index->cp = this->cp;
+  index->make_direct_map(false);
 }
 
 int
 GpuIndexIVF::getNumLists() const {
-  return nlist_;
+  return nlist;
 }
 
 void
 GpuIndexIVF::setNumProbes(int nprobe) {
-  FAISS_ASSERT(nprobe > 0);
-  nprobe_ = nprobe;
+  FAISS_THROW_IF_NOT_FMT(nprobe > 0 && nprobe <= getMaxKSelection(),
+                         "GPU index only supports nprobe <= %d; passed %d",
+                         getMaxKSelection(),
+                         nprobe);
+  this->nprobe = nprobe;
 }
 
 int
 GpuIndexIVF::getNumProbes() const {
-  return nprobe_;
+  return nprobe;
 }
 
-
-void
-GpuIndexIVF::add(Index::idx_t n, const float* x) {
-  // FIXME: GPU-ize
-  std::vector<Index::idx_t> ids(n);
-  for (Index::idx_t i = 0; i < n; ++i) {
-    ids[i] = this->ntotal + i;
-  }
-
-  add_with_ids(n, x, ids.data());
+bool
+GpuIndexIVF::addImplRequiresIDs_() const {
+  // All IVF indices have storage for IDs
+  return true;
 }
 
 void
@@ -261,7 +215,7 @@ GpuIndexIVF::trainQuantizer_(faiss::Index::idx_t n, const float* x) {
     return;
   }
 
-  if (quantizer_->is_trained && (quantizer_->ntotal == nlist_)) {
+  if (quantizer->is_trained && (quantizer->ntotal == nlist)) {
     if (this->verbose) {
       printf ("IVF quantizer does not need training.\n");
     }
@@ -277,14 +231,13 @@ GpuIndexIVF::trainQuantizer_(faiss::Index::idx_t n, const float* x) {
 
   // leverage the CPU-side k-means code, which works for the GPU
   // flat index as well
-  quantizer_->reset();
-  Clustering clus(this->d, nlist_, cp_);
+  quantizer->reset();
+  Clustering clus(this->d, nlist, this->cp);
   clus.verbose = verbose;
-  clus.train(n, x, *quantizer_);
-  quantizer_->is_trained = true;
+  clus.train(n, x, *quantizer);
+  quantizer->is_trained = true;
 
-  FAISS_ASSERT(quantizer_->ntotal == nlist_);
+  FAISS_ASSERT(quantizer->ntotal == nlist);
 }
-
 
 } } // namespace

@@ -1,21 +1,18 @@
-
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the CC-by-NC license found in the
+ * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 
 #include <algorithm>
-#include "../../FaissAssert.h"
+#include <faiss/impl/FaissAssert.h>
 
-#include "../utils/DeviceUtils.h"
-#include "../utils/MathOperators.cuh"
-#include "../utils/Tensor.cuh"
-#include "../utils/StaticUtils.h"
+#include <faiss/gpu/utils/DeviceUtils.h>
+#include <faiss/gpu/utils/MathOperators.cuh>
+#include <faiss/gpu/utils/Tensor.cuh>
+#include <faiss/gpu/utils/StaticUtils.h>
 
 namespace faiss { namespace gpu {
 
@@ -48,7 +45,7 @@ __global__ void sumAlongColumns(Tensor<T, 1, true> input,
 
       if (endRow) {
         for (int row = rowStart; row < output.getSize(0); ++row) {
-          T out = output[row][col].ldg();
+          T out = output[row][col];
           out = Math<T>::add(out, val);
           output[row][col] = out;
         }
@@ -58,7 +55,7 @@ __global__ void sumAlongColumns(Tensor<T, 1, true> input,
         for (int row = rowStart; row < rowEnd; row += kRowUnroll) {
 #pragma unroll
           for (int i = 0; i < kRowUnroll; ++i) {
-            rows[i] = output[row + i][col].ldg();
+            rows[i] = output[row + i][col];
           }
 
 #pragma unroll
@@ -87,7 +84,7 @@ __global__ void sumAlongColumns(Tensor<T, 1, true> input,
       for (int row = rowStart; row < output.getSize(0); ++row) {
 #pragma unroll
         for (int i = 0; i < kColLoad; ++i) {
-          T out = output[row][col + i * blockDim.x].ldg();
+          T out = output[row][col + i * blockDim.x];
           out = Math<T>::add(out, val[i]);
           output[row][col + i * blockDim.x] = out;
         }
@@ -101,7 +98,7 @@ __global__ void sumAlongColumns(Tensor<T, 1, true> input,
 #pragma unroll
           for (int j = 0; j < kColLoad; ++j) {
             rows[i * kColLoad + j] =
-              output[row + i][col + j * blockDim.x].ldg();
+              output[row + i][col + j * blockDim.x];
           }
         }
 
@@ -198,9 +195,9 @@ __global__ void assignAlongColumns(Tensor<T, 1, true> input,
   }
 }
 
-template <typename T, typename TVec>
+template <typename T, bool ZeroClamp>
 __global__ void sumAlongRows(Tensor<T, 1, true> input,
-                             Tensor<TVec, 2, true> output) {
+                             Tensor<T, 2, true> output) {
   __shared__ T sval;
 
   int row = blockIdx.x;
@@ -215,8 +212,10 @@ __global__ void sumAlongRows(Tensor<T, 1, true> input,
 
   // FIXME: speed up
   for (int i = threadIdx.x; i < output.getSize(1); i += blockDim.x) {
-    TVec out = output[row][i];
-    out = Math<TVec>::add(out, val);
+    T out = output[row][i];
+    out = Math<T>::add(out, val);
+    out = Math<T>::lt(out, Math<T>::zero()) ? Math<T>::zero() : out;
+
     output[row][i] = out;
   }
 }
@@ -254,7 +253,7 @@ void runSumAlongColumns(Tensor<T, 1, true>& input,
       <<<grid, block, 0, stream>>>(input, output);
   }
 
-  CUDA_VERIFY(cudaGetLastError());
+  CUDA_TEST_ERROR();
 }
 
 void runSumAlongColumns(Tensor<float, 1, true>& input,
@@ -263,13 +262,11 @@ void runSumAlongColumns(Tensor<float, 1, true>& input,
   runSumAlongColumns<float, float4>(input, output, stream);
 }
 
-#ifdef FAISS_USE_FLOAT16
 void runSumAlongColumns(Tensor<half, 1, true>& input,
                         Tensor<half, 2, true>& output,
                         cudaStream_t stream) {
   runSumAlongColumns<half, half2>(input, output, stream);
 }
-#endif
 
 template <typename T, typename TVec>
 void runAssignAlongColumns(Tensor<T, 1, true>& input,
@@ -304,7 +301,7 @@ void runAssignAlongColumns(Tensor<T, 1, true>& input,
       <<<grid, block, 0, stream>>>(input, output);
   }
 
-  CUDA_VERIFY(cudaGetLastError());
+  CUDA_TEST_ERROR();
 }
 
 void runAssignAlongColumns(Tensor<float, 1, true>& input,
@@ -313,54 +310,45 @@ void runAssignAlongColumns(Tensor<float, 1, true>& input,
   runAssignAlongColumns<float, float4>(input, output, stream);
 }
 
-#ifdef FAISS_USE_FLOAT16
 void runAssignAlongColumns(Tensor<half, 1, true>& input,
                            Tensor<half, 2, true>& output,
                            cudaStream_t stream) {
   runAssignAlongColumns<half, half2>(input, output, stream);
 }
-#endif
 
-template <typename T, typename TVec>
+template <typename T>
 void runSumAlongRows(Tensor<T, 1, true>& input,
                      Tensor<T, 2, true>& output,
+                     bool zeroClamp,
                      cudaStream_t stream) {
   FAISS_ASSERT(input.getSize(0) == output.getSize(0));
 
-  if (output.template canCastResize<TVec>()) {
-    auto outputV = output.template castResize<TVec>();
+  int threadsPerBlock =
+    std::min(output.getSize(1), getMaxThreadsCurrentDevice());
+  auto grid = dim3(output.getSize(0));
+  auto block = dim3(threadsPerBlock);
 
-    int threadsPerBlock =
-      std::min(outputV.getSize(1), getMaxThreadsCurrentDevice());
-    auto grid = dim3(outputV.getSize(0));
-    auto block = dim3(threadsPerBlock);
-
-    sumAlongRows<T, TVec><<<grid, block, 0, stream>>>(input, outputV);
+  if (zeroClamp) {
+    sumAlongRows<T, true><<<grid, block, 0, stream>>>(input, output);
   } else {
-    int threadsPerBlock =
-      std::min(output.getSize(1), getMaxThreadsCurrentDevice());
-    auto grid = dim3(output.getSize(0));
-    auto block = dim3(threadsPerBlock);
-
-    sumAlongRows<T, T><<<grid, block, 0, stream>>>(input, output);
+    sumAlongRows<T, false><<<grid, block, 0, stream>>>(input, output);
   }
 
-  CUDA_VERIFY(cudaGetLastError());
+  CUDA_TEST_ERROR();
 }
 
 void runSumAlongRows(Tensor<float, 1, true>& input,
                      Tensor<float, 2, true>& output,
+                     bool zeroClamp,
                      cudaStream_t stream) {
-  runSumAlongRows<float, float4>(input, output, stream);
+  runSumAlongRows<float>(input, output, zeroClamp, stream);
 }
 
-#ifdef FAISS_USE_FLOAT16
 void runSumAlongRows(Tensor<half, 1, true>& input,
                      Tensor<half, 2, true>& output,
+                     bool zeroClamp,
                      cudaStream_t stream) {
-  runSumAlongRows<half, half2>(input, output, stream);
+  runSumAlongRows<half>(input, output, zeroClamp, stream);
 }
-#endif
-
 
 } } // namespace

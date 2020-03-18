@@ -1,26 +1,23 @@
-
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the CC-by-NC license found in the
+ * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 
 #pragma once
 
-#include "Tensor.cuh"
+#include <faiss/gpu/utils/Tensor.cuh>
 
 namespace faiss { namespace gpu {
 
 template <typename T,
           int Dim,
-          bool Contig = false,
+          bool InnerContig = false,
           typename IndexT = int,
           template <typename U> class PtrTraits = traits::DefaultPtrTraits>
-class HostTensor : public Tensor<T, Dim, Contig, IndexT, PtrTraits> {
+class HostTensor : public Tensor<T, Dim, InnerContig, IndexT, PtrTraits> {
  public:
   typedef IndexT IndexType;
   typedef typename PtrTraits<T>::PtrType DataPtrType;
@@ -30,6 +27,13 @@ class HostTensor : public Tensor<T, Dim, Contig, IndexT, PtrTraits> {
 
   /// Destructor
   __host__ ~HostTensor();
+
+  /// Move constructor
+  __host__ HostTensor(HostTensor<T, Dim, InnerContig, IndexT, PtrTraits>&& t);
+
+  /// Move assignment
+  __host__ HostTensor<T, Dim, InnerContig, IndexT, PtrTraits>&
+  operator=(HostTensor<T, Dim, InnerContig, IndexT, PtrTraits>&& t);
 
   /// Constructs a tensor of the given size, allocating memory for it
   /// locally
@@ -52,19 +56,19 @@ class HostTensor : public Tensor<T, Dim, Contig, IndexT, PtrTraits> {
   /// Copies a tensor into ourselves, allocating memory for it
   /// locally. If the tensor is on the GPU, then we will copy it to
   /// ourselves wrt the given stream.
-  __host__ HostTensor(Tensor<T, Dim, Contig, IndexT, PtrTraits>& t,
+  __host__ HostTensor(Tensor<T, Dim, InnerContig, IndexT, PtrTraits>& t,
                       cudaStream_t stream);
 
   /// Call to zero out memory
-  __host__ HostTensor<T, Dim, Contig, IndexT, PtrTraits>& zero();
+  __host__ HostTensor<T, Dim, InnerContig, IndexT, PtrTraits>& zero();
 
   /// Returns the maximum difference seen between two tensors
   __host__ T
-  maxDiff(const HostTensor<T, Dim, Contig, IndexT, PtrTraits>& t) const;
+  maxDiff(const HostTensor<T, Dim, InnerContig, IndexT, PtrTraits>& t) const;
 
   /// Are the two tensors exactly equal?
   __host__ bool
-  equal(const HostTensor<T, Dim, Contig, IndexT, PtrTraits>& t) const {
+  equal(const HostTensor<T, Dim, InnerContig, IndexT, PtrTraits>& t) const {
     return (maxDiff(t) == (T) 0);
   }
 
@@ -84,4 +88,4 @@ class HostTensor : public Tensor<T, Dim, Contig, IndexT, PtrTraits> {
 
 } } // namespace
 
-#include "HostTensor-inl.cuh"
+#include <faiss/gpu/utils/HostTensor-inl.cuh>

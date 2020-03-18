@@ -1,18 +1,16 @@
-
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the CC-by-NC license found in the
+ * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 
 #pragma once
 
-#include "IVFBase.cuh"
-#include "../utils/Float16.cuh"
+#include <faiss/MetricType.h>
+#include <faiss/gpu/impl/IVFBase.cuh>
+#include <faiss/gpu/utils/Float16.cuh>
 
 namespace faiss { namespace gpu {
 
@@ -20,13 +18,16 @@ namespace faiss { namespace gpu {
 class IVFPQ : public IVFBase {
  public:
   IVFPQ(GpuResources* resources,
+        faiss::MetricType metric,
+        float metricArg,
         /// We do not own this reference
         FlatIndex* quantizer,
         int numSubQuantizers,
         int bitsPerSubQuantizer,
         float* pqCentroidData,
         IndicesOptions indicesOptions,
-        bool useFloat16LookupTables);
+        bool useFloat16LookupTables,
+        MemorySpace space);
 
   /// Returns true if we support PQ in this size
   static bool isSupportedPQCodeLength(int size);
@@ -132,10 +133,8 @@ class IVFPQ : public IVFBase {
   /// (centroid id)(sub q)(code id)
   DeviceTensor<float, 3, true> precomputedCode_;
 
-#ifdef FAISS_USE_FLOAT16
   /// Precomputed term 2 in half form
   DeviceTensor<half, 3, true> precomputedCodeHalf_;
-#endif
 };
 
 } } // namespace

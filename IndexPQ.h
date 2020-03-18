@@ -1,13 +1,10 @@
-
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the CC-by-NC license found in the
+ * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 // -*- c++ -*-
 
 #ifndef FAISS_INDEX_PQ_H
@@ -17,9 +14,9 @@
 
 #include <vector>
 
-#include "Index.h"
-#include "ProductQuantizer.h"
-#include "PolysemousTraining.h"
+#include <faiss/Index.h>
+#include <faiss/impl/ProductQuantizer.h>
+#include <faiss/impl/PolysemousTraining.h>
 
 namespace faiss {
 
@@ -47,23 +44,36 @@ struct IndexPQ: Index {
 
     IndexPQ ();
 
-    virtual void set_typename () override;
+    void train(idx_t n, const float* x) override;
 
-    virtual void train (idx_t n, const float *x) override;
+    void add(idx_t n, const float* x) override;
 
-    virtual void add (idx_t n, const float *x) override;
+    void search(
+        idx_t n,
+        const float* x,
+        idx_t k,
+        float* distances,
+        idx_t* labels) const override;
 
-    virtual void search (
-            idx_t n, const float *x, idx_t k,
-            float *distances, idx_t *labels) const override;
+    void reset() override;
 
-    virtual void reset() override;
+    void reconstruct_n(idx_t i0, idx_t ni, float* recons) const override;
 
-    virtual void reconstruct_n (idx_t i0, idx_t ni, float *recons)
-        const override;
+    void reconstruct(idx_t key, float* recons) const override;
 
-    virtual void reconstruct (idx_t key, float * recons)
-        const override;
+    size_t remove_ids(const IDSelector& sel) override;
+
+    /* The standalone codec interface */
+    size_t sa_code_size () const override;
+
+    void sa_encode (idx_t n, const float *x,
+                          uint8_t *bytes) const override;
+
+    void sa_decode (idx_t n, const uint8_t *bytes,
+                            float *x) const override;
+
+
+    DistanceComputer * get_distance_computer() const override;
 
     /******************************************************
      * Polysemous codes implementation
@@ -102,7 +112,7 @@ struct IndexPQ: Index {
     /// @param dist_histogram (M * nbits + 1)
     void hamming_distance_histogram (idx_t n, const float *x,
                                      idx_t nb, const float *xb,
-                                     long *dist_histogram);
+                                     int64_t *dist_histogram);
 
     /** compute pairwise distances between queries and database
      *
@@ -141,26 +151,49 @@ struct MultiIndexQuantizer: Index  {
                          size_t M,      ///< number of subquantizers
                          size_t nbits); ///< number of bit per subvector index
 
-    virtual void set_typename ();
+    void train(idx_t n, const float* x) override;
 
-    virtual void train (idx_t n, const float *x);
-
-
-    virtual void search (idx_t n, const float *x, idx_t k,
-                              float *distances, idx_t *labels) const;
+    void search(
+        idx_t n, const float* x, idx_t k,
+        float* distances, idx_t* labels) const override;
 
     /// add and reset will crash at runtime
-    virtual void add (idx_t n, const float *x);
-    virtual void reset ();
+    void add(idx_t n, const float* x) override;
+    void reset() override;
 
     MultiIndexQuantizer () {}
 
-    virtual void reconstruct (idx_t key, float * recons) const;
+    void reconstruct(idx_t key, float* recons) const override;
+};
+
+
+/** MultiIndexQuantizer where the PQ assignmnet is performed by sub-indexes
+ */
+struct MultiIndexQuantizer2: MultiIndexQuantizer {
+
+    /// M Indexes on d / M dimensions
+    std::vector<Index*> assign_indexes;
+    bool own_fields;
+
+    MultiIndexQuantizer2 (
+        int d, size_t M, size_t nbits,
+        Index **indexes);
+
+    MultiIndexQuantizer2 (
+        int d, size_t nbits,
+        Index *assign_index_0,
+        Index *assign_index_1);
+
+    void train(idx_t n, const float* x) override;
+
+    void search(
+        idx_t n, const float* x, idx_t k,
+        float* distances, idx_t* labels) const override;
+
 };
 
 
 } // namespace faiss
-
 
 
 #endif

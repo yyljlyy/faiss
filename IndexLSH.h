@@ -1,13 +1,10 @@
-
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the CC-by-NC license found in the
+ * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 // -*- c++ -*-
 
 #ifndef INDEX_LSH_H
@@ -15,8 +12,8 @@
 
 #include <vector>
 
-#include "Index.h"
-#include "VectorTransform.h"
+#include <faiss/Index.h>
+#include <faiss/VectorTransform.h>
 
 namespace faiss {
 
@@ -51,36 +48,43 @@ struct IndexLSH:Index {
      */
     const float *apply_preprocess (idx_t n, const float *x) const;
 
-    virtual void set_typename () override;
+    void train(idx_t n, const float* x) override;
 
-    virtual void train (idx_t n, const float *x) override;
+    void add(idx_t n, const float* x) override;
 
-    virtual void add (idx_t n, const float *x) override;
+    void search(
+        idx_t n,
+        const float* x,
+        idx_t k,
+        float* distances,
+        idx_t* labels) const override;
 
-    virtual void search (
-            idx_t n,
-            const float *x, idx_t k,
-            float *distances,
-            idx_t *labels) const override;
-
-    virtual void reset() override;
+    void reset() override;
 
     /// transfer the thresholds to a pre-processing stage (and unset
     /// train_thresholds)
     void transfer_thresholds (LinearTransform * vt);
 
-    virtual ~IndexLSH () {}
+    ~IndexLSH() override {}
 
     IndexLSH ();
+
+    /* standalone codec interface.
+     *
+     * The vectors are decoded to +/- 1 (not 0, 1) */
+
+    size_t sa_code_size () const override;
+
+    void sa_encode (idx_t n, const float *x,
+                          uint8_t *bytes) const override;
+
+    void sa_decode (idx_t n, const uint8_t *bytes,
+                            float *x) const override;
+
 };
 
 
-
 }
-
-
-
-
 
 
 #endif

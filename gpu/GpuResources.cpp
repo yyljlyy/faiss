@@ -1,16 +1,13 @@
-
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the CC-by-NC license found in the
+ * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 
-#include "GpuResources.h"
-#include "utils/DeviceUtils.h"
+#include <faiss/gpu/GpuResources.h>
+#include <faiss/gpu/utils/DeviceUtils.h>
 
 namespace faiss { namespace gpu {
 
@@ -40,6 +37,16 @@ GpuResources::getMemoryManagerCurrentDevice() {
 cudaStream_t
 GpuResources::getAsyncCopyStreamCurrentDevice() {
   return getAsyncCopyStream(getCurrentDevice());
+}
+
+void
+GpuResources::syncDefaultStream(int device) {
+  CUDA_VERIFY(cudaStreamSynchronize(getDefaultStream(device)));
+}
+
+void
+GpuResources::syncDefaultStreamCurrentDevice() {
+  syncDefaultStream(getCurrentDevice());
 }
 
 } } // namespace

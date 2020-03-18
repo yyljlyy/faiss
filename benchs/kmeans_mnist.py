@@ -1,8 +1,6 @@
-
-# Copyright (c) 2015-present, Facebook, Inc.
-# All rights reserved.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
-# This source code is licensed under the CC-by-NC license found in the
+# This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
 #! /usr/bin/env python2
@@ -55,14 +53,19 @@ def train_kmeans(x, k, ngpu):
 
     res = [faiss.StandardGpuResources() for i in range(ngpu)]
 
-    useFloat16 = False
+    flat_config = []
+    for i in range(ngpu):
+        cfg = faiss.GpuIndexFlatConfig()
+        cfg.useFloat16 = False
+        cfg.device = i
+        flat_config.append(cfg)
 
     if ngpu == 1:
-        index = faiss.GpuIndexFlatL2(res[0], 0, d, useFloat16)
+        index = faiss.GpuIndexFlatL2(res[0], d, flat_config[0])
     else:
-        indexes = [faiss.GpuIndexFlatL2(res[i], i, d, useFloat16)
+        indexes = [faiss.GpuIndexFlatL2(res[i], d, flat_config[i])
                    for i in range(ngpu)]
-        index = faiss.IndexProxy()
+        index = faiss.IndexReplicas()
         for sub_index in indexes:
             index.addIndex(sub_index)
 

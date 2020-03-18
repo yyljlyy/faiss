@@ -1,17 +1,14 @@
-
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the CC-by-NC license found in the
+ * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 
 #pragma once
 
-#include "GpuIndex.h"
+#include <faiss/gpu/GpuIndex.h>
 
 namespace faiss {
 
@@ -25,6 +22,29 @@ namespace faiss { namespace gpu {
 
 struct FlatIndex;
 
+struct GpuIndexFlatConfig : public GpuIndexConfig {
+  inline GpuIndexFlatConfig()
+      : useFloat16(false),
+        useFloat16Accumulator(false),
+        storeTransposed(false) {
+  }
+
+  /// Whether or not data is stored as float16
+  bool useFloat16;
+
+  /// This option is now deprecated and doesn't do anything. All accumulation of
+  /// float16 or float32 data is now done in float32.
+  bool useFloat16Accumulator;
+
+  /// Whether or not data is stored (transparently) in a transposed
+  /// layout, enabling use of the NN GEMM call, which is ~10% faster.
+  /// This will improve the speed of the flat index, but will
+  /// substantially slow down any add() calls made, as all data must
+  /// be transposed, and will increase storage requirements (we store
+  /// data in both transposed and non-transposed layouts).
+  bool storeTransposed;
+};
+
 /// Wrapper around the GPU implementation that looks like
 /// faiss::IndexFlat; copies over centroid data from a given
 /// faiss::IndexFlat
@@ -33,28 +53,16 @@ class GpuIndexFlat : public GpuIndex {
   /// Construct from a pre-existing faiss::IndexFlat instance, copying
   /// data over to the given GPU
   GpuIndexFlat(GpuResources* resources,
-               int device,
-               bool useFloat16,
-               const faiss::IndexFlat* index);
+               const faiss::IndexFlat* index,
+               GpuIndexFlatConfig config = GpuIndexFlatConfig());
 
   /// Construct an empty instance that can be added to
   GpuIndexFlat(GpuResources* resources,
-               int device,
                int dims,
-               bool useFloat16,
-               faiss::MetricType metric);
+               faiss::MetricType metric,
+               GpuIndexFlatConfig config = GpuIndexFlatConfig());
 
   ~GpuIndexFlat() override;
-
-  /// Set the minimum data size for searches (in MiB) for which we use
-  /// CPU -> GPU paging
-  void setMinPagingSize(size_t size);
-
-  /// Returns the current minimum data size for paged searches
-  size_t getMinPagingSize() const;
-
-  /// Do we store vectors and perform math in float16?
-  bool getUseFloat16() const;
 
   /// Initialize ourselves from the given CPU index; will overwrite
   /// all data in ourselves
@@ -73,17 +81,8 @@ class GpuIndexFlat : public GpuIndex {
   /// This index is not trained, so this does nothing
   void train(Index::idx_t n, const float* x) override;
 
-  /// `x` can be resident on the CPU or any GPU; the proper copies are
-  /// performed
-  void add(Index::idx_t n, const float* x) override;
-
-  /// `x`, `distances` and `labels` can be resident on the CPU or any
-  /// GPU; copies are performed as needed
-  void search(faiss::Index::idx_t n,
-              const float* x,
-              faiss::Index::idx_t k,
-              float* distances,
-              faiss::Index::idx_t* labels) const override;
+  /// Overrides to avoid excessive copies
+  void add(faiss::Index::idx_t, const float* x) override;
 
   /// Reconstruction methods; prefer the batch reconstruct as it will
   /// be more efficient
@@ -94,34 +93,46 @@ class GpuIndexFlat : public GpuIndex {
                      faiss::Index::idx_t num,
                      float* out) const override;
 
-  void set_typename() override;
+  /// Compute residual
+  void compute_residual(const float* x,
+                        float* residual,
+                        faiss::Index::idx_t key) const override;
+
+  /// Compute residual (batch mode)
+  void compute_residual_n(faiss::Index::idx_t n,
+                          const float* xs,
+                          float* residuals,
+                          const faiss::Index::idx_t* keys) const override;
 
   /// For internal access
   inline FlatIndex* getGpuData() { return data_; }
 
  protected:
-  /// Called from search when the input data is on the CPU;
-  /// potentially allows for pinned memory usage
-  void searchFromCpuPaged_(int n,
-                           const float* x,
-                           int k,
-                           float* outDistancesData,
-                           int* outIndicesData) const;
+  /// Flat index does not require IDs as there is no storage available for them
+  bool addImplRequiresIDs_() const override;
 
-  void searchNonPaged_(int n,
-                       const float* x,
-                       int k,
-                       float* outDistancesData,
-                       int* outIndicesData) const;
+  /// Called from GpuIndex for add
+  void addImpl_(int n,
+                const float* x,
+                const Index::idx_t* ids) override;
+
+  /// Called from GpuIndex for search
+  void searchImpl_(int n,
+                   const float* x,
+                   int k,
+                   float* distances,
+                   faiss::Index::idx_t* labels) const override;
+
+ private:
+  /// Checks user settings for consistency
+  void verifySettings_() const;
 
  protected:
-  /// Size above which we page copies from the CPU to GPU
-  size_t minPagedSize_;
+  /// Our config object
+  const GpuIndexFlatConfig config_;
 
-  /// Whether or not we store our vectors in float32 or float16
-  const bool useFloat16_;
-
-  /// Holds our GPU data containing the list of vectors
+  /// Holds our GPU data containing the list of vectors; is managed via raw
+  /// pointer so as to allow non-CUDA compilers to see this header
   FlatIndex* data_;
 };
 
@@ -133,23 +144,21 @@ class GpuIndexFlatL2 : public GpuIndexFlat {
   /// Construct from a pre-existing faiss::IndexFlatL2 instance, copying
   /// data over to the given GPU
   GpuIndexFlatL2(GpuResources* resources,
-                 int device,
-                 bool useFloat16,
-                 faiss::IndexFlatL2* index);
+                 faiss::IndexFlatL2* index,
+                 GpuIndexFlatConfig config = GpuIndexFlatConfig());
 
   /// Construct an empty instance that can be added to
   GpuIndexFlatL2(GpuResources* resources,
-                 int device,
                  int dims,
-                 bool useFloat16);
+                 GpuIndexFlatConfig config = GpuIndexFlatConfig());
 
   /// Initialize ourselves from the given CPU index; will overwrite
   /// all data in ourselves
-  void copyFrom(faiss::IndexFlatL2* index);
+  void copyFrom(faiss::IndexFlat* index);
 
   /// Copy ourselves to the given CPU index; will overwrite all data
   /// in the index instance
-  void copyTo(faiss::IndexFlatL2* index);
+  void copyTo(faiss::IndexFlat* index);
 };
 
 /// Wrapper around the GPU implementation that looks like
@@ -160,23 +169,21 @@ class GpuIndexFlatIP : public GpuIndexFlat {
   /// Construct from a pre-existing faiss::IndexFlatIP instance, copying
   /// data over to the given GPU
   GpuIndexFlatIP(GpuResources* resources,
-                 int device,
-                 bool useFloat16,
-                 faiss::IndexFlatIP* index);
+                 faiss::IndexFlatIP* index,
+                 GpuIndexFlatConfig config = GpuIndexFlatConfig());
 
   /// Construct an empty instance that can be added to
   GpuIndexFlatIP(GpuResources* resources,
-                 int device,
                  int dims,
-                 bool useFloat16);
+                 GpuIndexFlatConfig config = GpuIndexFlatConfig());
 
   /// Initialize ourselves from the given CPU index; will overwrite
   /// all data in ourselves
-  void copyFrom(faiss::IndexFlatIP* index);
+  void copyFrom(faiss::IndexFlat* index);
 
   /// Copy ourselves to the given CPU index; will overwrite all data
   /// in the index instance
-  void copyTo(faiss::IndexFlatIP* index);
+  void copyTo(faiss::IndexFlat* index);
 };
 
 } } // namespace

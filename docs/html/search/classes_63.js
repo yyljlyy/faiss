@@ -1,5 +1,6 @@
 var searchData=
 [
+  ['centeringtransform',['CenteringTransform',['../structfaiss_1_1CenteringTransform.html',1,'faiss']]],
   ['cloner',['Cloner',['../structfaiss_1_1Cloner.html',1,'faiss']]],
   ['clustering',['Clustering',['../structfaiss_1_1Clustering.html',1,'faiss']]],
   ['clusteringparameters',['ClusteringParameters',['../structfaiss_1_1ClusteringParameters.html',1,'faiss']]],

@@ -1,21 +1,21 @@
-
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the CC-by-NC license found in the
+ * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 // -*- c++ -*-
 
 #ifndef FAISS_AUTO_TUNE_H
 #define FAISS_AUTO_TUNE_H
 
 #include <vector>
+#include <unordered_map>
+#include <stdint.h>
 
-#include "Index.h"
+#include <faiss/Index.h>
+#include <faiss/IndexBinary.h>
 
 namespace faiss {
 
@@ -61,9 +61,9 @@ struct OneRecallAtRCriterion: AutoTuneCriterion {
 
     OneRecallAtRCriterion (idx_t nq, idx_t R);
 
-    virtual double evaluate (const float *D, const idx_t *I) const override;
+    double evaluate(const float* D, const idx_t* I) const override;
 
-    virtual ~OneRecallAtRCriterion () {}
+    ~OneRecallAtRCriterion() override {}
 };
 
 
@@ -73,9 +73,9 @@ struct IntersectionCriterion: AutoTuneCriterion {
 
     IntersectionCriterion (idx_t nq, idx_t R);
 
-    virtual double evaluate (const float *D, const idx_t *I) const override;
+    double evaluate(const float* D, const idx_t* I) const override;
 
-    virtual ~IntersectionCriterion () {}
+    ~IntersectionCriterion() override {}
 };
 
 /**
@@ -88,7 +88,7 @@ struct OperatingPoint {
     double perf;     ///< performance measure (output of a Criterion)
     double t;        ///< corresponding execution time (ms)
     std::string key; ///< key that identifies this op pt
-    long cno;        ///< integer identifer
+    int64_t cno;        ///< integer identifer
 };
 
 struct OperatingPoints {
@@ -149,6 +149,10 @@ struct ParameterSpace {
     /// independent single-searches)
     bool thread_over_batches;
 
+    /// run tests several times until they reach at least this
+    /// duration (to avoid jittering in MT mode)
+    double min_test_duration;
+
     ParameterSpace ();
 
     /// nb of combinations, = product of values sizes
@@ -163,7 +167,7 @@ struct ParameterSpace {
     /// print a description on stdout
     void display () const;
 
-    /// add a new parameter
+    /// add a new parameter (or return it if it exists)
     ParameterRange &add_range(const char * name);
 
     /// initialize with reasonable parameters for the index
@@ -189,7 +193,7 @@ struct ParameterSpace {
      * @param index   index to run on
      * @param xq      query vectors (size nq * index.d)
      * @param crit    selection criterion
-     * @param ops     resutling operating points
+     * @param ops     resulting operating points
      */
     void explore (Index *index,
                   size_t nq, const float *xq,
@@ -198,11 +202,6 @@ struct ParameterSpace {
 
     virtual ~ParameterSpace () {}
 };
-
-/** Build and index with the sequence of processing steps described in
- *  the string. */
-Index *index_factory (int d, const char *description,
-                      MetricType metric = METRIC_L2);
 
 
 

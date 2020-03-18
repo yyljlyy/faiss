@@ -1,13 +1,10 @@
-
 /**
- * Copyright (c) 2015-present, Facebook, Inc.
- * All rights reserved.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
- * This source code is licensed under the CC-by-NC license found in the
+ * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
-// Copyright 2004-present Facebook. All Rights Reserved.
 
 #pragma once
 
@@ -16,13 +13,18 @@
 namespace faiss { namespace gpu { namespace utils {
 
 template <typename U, typename V>
+constexpr __host__ __device__ auto divDown(U a, V b) -> decltype(a + b) {
+  return (a / b);
+}
+
+template <typename U, typename V>
 constexpr __host__ __device__ auto divUp(U a, V b) -> decltype(a + b) {
   return (a + b - 1) / b;
 }
 
 template <typename U, typename V>
 constexpr __host__ __device__ auto roundDown(U a, V b) -> decltype(a + b) {
-  return (a / b) * b;
+  return divDown(a, b) * b;
 }
 
 template <typename U, typename V>
@@ -61,7 +63,7 @@ static_assert(!isPowerOf2(3333), "isPowerOf2");
 
 template <typename T>
 constexpr __host__ __device__ T nextHighestPowerOf2(T v) {
-  return (isPowerOf2(v) ? (T) 2 * v : (1 << (log2(v) + 1)));
+  return (isPowerOf2(v) ? (T) 2 * v : ((T) 1 << (log2(v) + 1)));
 }
 
 static_assert(nextHighestPowerOf2(1) == 2, "nextHighestPowerOf2");
@@ -72,5 +74,10 @@ static_assert(nextHighestPowerOf2(4) == 8, "nextHighestPowerOf2");
 static_assert(nextHighestPowerOf2(15) == 16, "nextHighestPowerOf2");
 static_assert(nextHighestPowerOf2(16) == 32, "nextHighestPowerOf2");
 static_assert(nextHighestPowerOf2(17) == 32, "nextHighestPowerOf2");
+
+static_assert(nextHighestPowerOf2(1536000000u) == 2147483648u,
+              "nextHighestPowerOf2");
+static_assert(nextHighestPowerOf2((size_t) 2147483648ULL) ==
+              (size_t) 4294967296ULL, "nextHighestPowerOf2");
 
 } } } // namespace
